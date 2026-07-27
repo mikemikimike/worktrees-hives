@@ -127,6 +127,8 @@ class Orchestrator:
 
         Parameters
         ----------
+        workers:
+            List of worker specifications to execute.
         on_status_change:
             Optional callback invoked on every worker state transition.
             Called with ``(worker_id, new_status)`` as each worker moves
@@ -171,10 +173,10 @@ class Orchestrator:
                 return
             try:
                 on_status_change(spec.worker_id, status)
-            except Exception as exc:
+            except Exception as err:
                 warnings.warn(
                     f"on_status_change callback failed for {spec.worker_id} "
-                    f"({status.value}): {exc}",
+                    f"({status.value}): {err}",
                     RuntimeWarning,
                     stacklevel=2,
                 )

@@ -524,33 +524,33 @@ def _validate_remote_name(remote: str) -> None:
         )
 
 
-def _validate_branch_name(field: str, value: str) -> None:
+def _validate_branch_name(field_name: str, value: str) -> None:
     """Reject empty or option-looking branch/ref names (e.g. ``--force``)."""
     if not value or not _BRANCH_NAME_RE.fullmatch(value) or value.startswith("-"):
         raise IssueToPrError(
             Step.INIT,
-            f"Invalid {field} {value!r}: must be a plain git ref, "
+            f"Invalid {field_name} {value!r}: must be a plain git ref, "
             "not empty or option-looking (e.g. --force)",
         )
 
 
-def _validate_path_segment(field: str, value: str) -> None:
+def _validate_path_segment(field_name: str, value: str) -> None:
     """Reject path-traversal and absolute components in owner/repo segments."""
     if not value or value in (".", ".."):
-        raise IssueToPrError(Step.INIT, f"Invalid {field} segment: {value!r}")
+        raise IssueToPrError(Step.INIT, f"Invalid {field_name} segment: {value!r}")
     # Reject separators and drive-style absolute components.
     if "/" in value or "\\" in value or ":" in value:
         raise IssueToPrError(
             Step.INIT,
-            f"Invalid {field} segment (contains separator): {value!r}",
+            f"Invalid {field_name} segment (contains separator): {value!r}",
         )
     if value.startswith("-"):
         raise IssueToPrError(
             Step.INIT,
-            f"Invalid {field} segment (option-looking): {value!r}",
+            f"Invalid {field_name} segment (option-looking): {value!r}",
         )
     # Reject absolute or multi-component pure paths on either OS convention.
     for pure in (PurePosixPath(value), PureWindowsPath(value)):
         parts = pure.parts
         if len(parts) != 1 or parts[0] in (".", "..") or pure.is_absolute():
-            raise IssueToPrError(Step.INIT, f"Invalid {field} segment: {value!r}")
+            raise IssueToPrError(Step.INIT, f"Invalid {field_name} segment: {value!r}")

@@ -231,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
     """Main CLI entry point (worktrees-hives / wh-orch)."""
     parser = argparse.ArgumentParser(
         prog="worktrees-hives",
-        description=("worktrees-hives Python orchestrator (does not shadow the Rust `wh` binary)"),
+        description="worktrees-hives Python orchestrator (does not shadow the Rust `wh` binary)",
     )
     parser.add_argument(
         "--state",

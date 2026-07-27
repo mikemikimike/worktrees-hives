@@ -19,10 +19,20 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}  # to check out the actual pull request commit, not the merge commit
           fetch-depth: 0  # a full history is required for pull request analysis
+      - uses: actions/setup-python@v5
+        id: setup-python
+        with:
+          python-version: '3.10'
+      - name: Install Python dependencies
+        working-directory: python
+        run: pip install -e ".[test]"
       - name: 'Qodana Scan'
         uses: JetBrains/qodana-action@v2026.1
         with:
           pr-mode: false
+          args: --project-dir,python,--within-docker,false
         env:
           QODANA_TOKEN: ${{ secrets.QODANA_TOKEN_1561455798 }}
           QODANA_ENDPOINT: 'https://qodana.cloud'
+          QODANA_PYTHON_PATH: ${{ steps.setup-python.outputs.python-path }}
+          JAVA_TOOL_OPTIONS: --enable-native-access=ALL-UNNAMED --sun-misc-unsafe-memory-access=allow

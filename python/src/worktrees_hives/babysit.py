@@ -90,6 +90,9 @@ class PRState(Enum):
     DRAFT = "draft"
     UNKNOWN = "unknown"
 
+    def __str__(self) -> str:
+        return self.value
+
 
 class ThreadAction(Enum):
     """Action taken on a review thread."""
@@ -699,7 +702,7 @@ class BabysitCycle:
             return BabysitResult(
                 pr_number=self.pr_number,
                 state=state,
-                residual_blockers=[f"PR is {state.value}"],
+                residual_blockers=[f"PR is {state}"],
             )
 
         result = BabysitResult(pr_number=self.pr_number, state=state)
@@ -835,7 +838,7 @@ class BabysitCycle:
                 result.threads_remaining -= 1
             elif action == ThreadAction.REPLY_ONLY:
                 hit_cap = True
-                reply_body = self._draft_substantive_reply(thread)
+                reply_body = self._draft_substantive_reply()
                 try:
                     reply_to_thread(
                         self.owner,
@@ -940,7 +943,8 @@ class BabysitCycle:
             return ThreadAction.REPLY_ONLY
         return ThreadAction.FIX_AND_REPLY
 
-    def _is_actionable(self, thread: ReviewThread) -> bool:
+    @staticmethod
+    def _is_actionable(thread: ReviewThread) -> bool:
         """Check if any comment in the thread describes a code-fixable issue.
 
         Inspects the full thread (not only the first comment) so follow-up
@@ -967,7 +971,7 @@ class BabysitCycle:
         ]
         return any(signal in body for signal in actionable_signals)
 
-    def _draft_substantive_reply(self, thread: ReviewThread) -> str:
+    def _draft_substantive_reply(self) -> str:
         """Draft a substantive reply when fix budget is exhausted."""
         return (
             f"Thank you for the review. The fix budget for this cycle "
@@ -998,7 +1002,8 @@ class BabysitCycle:
                 shas.append(s)
         return shas
 
-    def _get_head_sha(self, pr_data: dict[str, Any]) -> str:
+    @staticmethod
+    def _get_head_sha(pr_data: dict[str, Any]) -> str:
         """Get the HEAD SHA of the PR branch."""
         sha = pr_data.get("headRefOid")
         if isinstance(sha, str) and sha:
