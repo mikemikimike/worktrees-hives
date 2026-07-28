@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -56,11 +57,15 @@ class TestResolveWhBinary:
             _resolve_wh_binary(None)
 
     def test_path_fallback(self, tmp_path, monkeypatch):
-        binary = tmp_path / "wh"
-        binary.write_text("#!/bin/sh")
-        binary.chmod(0o755)
         monkeypatch.delenv("WH_BIN", raising=False)
         monkeypatch.setenv("PATH", str(tmp_path))
+        # Windows executable lookup requires a PATHEXT extension; POSIX does not.
+        if sys.platform == "win32":
+            binary = tmp_path / "wh.EXE"
+        else:
+            binary = tmp_path / "wh"
+        binary.write_text("fake binary")
+        binary.chmod(0o755)
         result = _resolve_wh_binary(None)
         assert result == str(binary)
 
