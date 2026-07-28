@@ -20,6 +20,9 @@ jobs:
           # PR head when present; otherwise the event SHA (push / workflow_dispatch).
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0  # a full history is required for pull request analysis
+          # Do not leave the job token in .git after checkout: pip install -e runs
+          # untrusted packaging code from the PR head.
+          persist-credentials: false
       - uses: actions/setup-python@v5
         id: setup-python
         with:

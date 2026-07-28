@@ -168,21 +168,50 @@ _NEVER_MERGE_MARKER = "<!-- worktrees-hives: never-auto-merge -->"
 
 
 def _is_forbidden_merge_cmd(cmd: list[str]) -> bool:
-    """True only for real merge invocations, not args equal to the word merge.
+    """True for merge *subcommands/endpoints* by structure, not metadata text.
 
-    Matches ``gh pr merge``, ``gh api .../merges``, GraphQL ``mergePullRequest``,
-    and similar. A PR title/label of ``merge`` must not trip this guard.
+    Scans ``gh`` argv positionally so a repo named ``owner/merge``, a label
+    ``merge``, or a title containing ``/merges`` cannot false-positive.
+    Matches ``gh pr merge``, REST ``.../merges`` (or ``.../merge``) after
+    ``gh api``, and GraphQL ``mergePullRequest`` tokens.
     """
-    if not cmd:
+    if len(cmd) < 2:
         return False
-    for i, arg in enumerate(cmd):
-        if arg in ("mergePullRequest", "merge-pull-request"):
+    # Drop binary (may be a path to gh).
+    args = list(cmd[1:])
+    for i in range(len(args) - 1):
+        if args[i] == "pr" and args[i + 1] == "merge":
             return True
-        if arg == "merge" and i > 0 and cmd[i - 1] in ("pr", "pull", "pulls"):
-            return True
-        if "/merges" in arg or arg.endswith("/merge"):
-            return True
-    return False
+    for i, a in enumerate(args):
+        if a != "api":
+            continue
+        j = i + 1
+        # Skip flags (and one following value for common value-taking flags).
+        value_flags = {
+            "-X",
+            "--method",
+            "-H",
+            "-f",
+            "-F",
+            "--jq",
+            "--input",
+            "--field",
+            "--raw-field",
+            "--header",
+        }
+        while j < len(args) and args[j].startswith("-"):
+            if args[j] in value_flags:
+                j += 2
+            else:
+                j += 1
+        if j < len(args):
+            endpoint = args[j].rstrip("/")
+            if endpoint.endswith("/merges") or endpoint.endswith("/merge"):
+                return True
+            if "mergePullRequest" in endpoint:
+                return True
+        break
+    return "mergePullRequest" in args or "merge-pull-request" in args
 
 
 class IssueToPr:

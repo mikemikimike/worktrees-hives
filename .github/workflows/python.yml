@@ -118,5 +118,6 @@ jobs:
 
       - name: Run tests
         env:
-          WH_BIN: ${{ github.workspace }}/target/release/wh
+          # Only point WH_BIN at a built artifact when the Rust CLI is built above.
+          WH_BIN: ${{ needs.check-python-pkg.outputs.has-cargo == 'true' && format('{0}/target/release/wh', github.workspace) || '' }}
         run: python -m pytest python/tests/ -v --tb=short

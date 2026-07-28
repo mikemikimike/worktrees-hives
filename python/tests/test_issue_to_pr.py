@@ -18,7 +18,43 @@ from worktrees_hives.issue_to_pr import (
     IssueToPrError,
     IssueToPrResult,
     Step,
+    _is_forbidden_merge_cmd,
 )
+
+
+class TestIsForbiddenMergeCmd:
+    """Structural never-merge guard must not scan metadata strings."""
+
+    def test_allows_create_with_merge_like_metadata(self):
+        cmd = [
+            "gh",
+            "pr",
+            "create",
+            "--repo",
+            "owner/merge",
+            "--head",
+            "h",
+            "--base",
+            "main",
+            "--title",
+            "t",
+            "--body",
+            "b",
+            "--label",
+            "merge",
+        ]
+        assert not _is_forbidden_merge_cmd(cmd)
+
+    def test_blocks_pr_merge(self):
+        assert _is_forbidden_merge_cmd(["gh", "pr", "merge", "12"])
+
+    def test_blocks_rest_merges_endpoint(self):
+        assert _is_forbidden_merge_cmd(["gh", "api", "repos/o/r/pulls/1/merges"])
+        assert _is_forbidden_merge_cmd(["gh", "api", "-X", "POST", "repos/o/r/pulls/1/merge"])
+
+    def test_allows_api_get_on_repo_named_merge(self):
+        assert not _is_forbidden_merge_cmd(["gh", "api", "repos/o/merge/pulls/1", "-X", "GET"])
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
