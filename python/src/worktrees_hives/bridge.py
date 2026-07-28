@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 
 from worktrees_hives.contract import (
@@ -57,9 +56,16 @@ def _resolve_wh_binary(explicit_path: str | None = None) -> str:
             raise WhBinaryNotFoundError(f"WH_BIN points to non-executable file: {env_path}")
         return env_path
 
-    found = shutil.which("wh")
-    if found is not None:
-        return found
+    # Walk PATH with str names only (avoids shutil.which PathLike deprecation on
+    # older Windows / Qodana PyDeprecationInspection).
+    wh_name = "wh"
+    path_env = os.environ.get("PATH", "")
+    for directory in path_env.split(os.pathsep):
+        if not directory:
+            continue
+        candidate = os.path.join(directory, wh_name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
 
     raise WhBinaryNotFoundError()
 

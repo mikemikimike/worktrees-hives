@@ -990,7 +990,9 @@ class BabysitCycle:
             return []
         try:
             raw = self.fix_handler(thread)
-        except Exception:
+        except (TypeError, ValueError, RuntimeError, OSError, AttributeError, KeyError):
+            # Narrow catch: fix handlers may fail on bad thread payloads or I/O;
+            # do not swallow BaseException / KeyboardInterrupt.
             return []
         if not raw:
             return []
