@@ -70,9 +70,7 @@ class TestResolveWhBinary:
         with pytest.raises(WhBinaryNotFoundError, match="not found"):
             _resolve_wh_binary(None)
 
-    def test_windows_pathext_prefers_extension_over_bare_name(
-        self, tmp_path, monkeypatch
-    ):
+    def test_windows_pathext_prefers_extension_over_bare_name(self, tmp_path, monkeypatch):
         """On Windows a bare ``wh`` file must not be chosen before ``wh.exe``."""
         bare = tmp_path / "wh"
         bare.write_text("not an executable")
