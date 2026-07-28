@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 
 from worktrees_hives.contract import (
     ErrorResponse,
@@ -57,15 +58,26 @@ def _resolve_wh_binary(explicit_path: str | None = None) -> str:
         return env_path
 
     # Walk PATH with str names only (avoids shutil.which PathLike deprecation on
-    # older Windows / Qodana PyDeprecationInspection).
-    wh_name = "wh"
+    # older Windows / Qodana PyDeprecationInspection). On Windows, honor PATHEXT
+    # so ``wh.exe`` resolves the same way as CreateProcess.
+    names = ["wh"]
+    if sys.platform == "win32":
+        pathext = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        for ext in pathext.split(os.pathsep):
+            if not ext:
+                continue
+            names.append("wh" + ext)
+            names.append("wh" + ext.lower())
+    # Preserve order, drop duplicates.
+    names = list(dict.fromkeys(names))
     path_env = os.environ.get("PATH", "")
     for directory in path_env.split(os.pathsep):
         if not directory:
             continue
-        candidate = os.path.join(directory, wh_name)
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
+        for name in names:
+            candidate = os.path.join(directory, name)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
 
     raise WhBinaryNotFoundError()
 

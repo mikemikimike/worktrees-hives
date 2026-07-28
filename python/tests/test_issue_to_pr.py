@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -419,14 +422,20 @@ class TestNamingHelpers:
         cfg = _make_config(owner="acme", repo="example-repo", issue_number=8)
         orch = IssueToPr(config=cfg, wh_client=MagicMock())
         path = orch._worktree_path()
-        assert path.endswith("acme/example-repo/issue-8")
-        assert ".local/share/worktrees-hives/worktrees" in path
+        parts = Path(path).parts
+        assert parts[-3:] == ("acme", "example-repo", "issue-8")
+        if sys.platform == "win32":
+            assert "worktrees-hives" in parts
+            assert "worktrees" in parts
+        else:
+            assert ".local/share/worktrees-hives/worktrees" in path.replace("\\", "/")
 
     def test_worktree_path_custom_base(self, monkeypatch):
         monkeypatch.setenv("WH_WORKTREE_BASE", "/tmp/custom-wt")
         cfg = _make_config(owner="o", repo="r", issue_number=5)
         orch = IssueToPr(config=cfg, wh_client=MagicMock())
-        assert orch._worktree_path() == "/tmp/custom-wt/o/r/issue-5"
+        expected = str(Path("/tmp/custom-wt") / "o" / "r" / "issue-5")
+        assert orch._worktree_path() == expected
 
     def test_custom_remote_in_push(self, monkeypatch):
         """Custom remote name should be used in git push."""
@@ -646,7 +655,8 @@ class TestRemotePathBaseRejection:
         cfg = _make_config(owner="acme", repo="example-repo", issue_number=3)
         orch = IssueToPr(config=cfg, wh_client=MagicMock())
         path = orch._worktree_path()
-        assert path == "/tmp/wt-base/acme/example-repo/issue-3"
+        expected = str(Path("/tmp/wt-base") / "acme" / "example-repo" / "issue-3")
+        assert path == expected
 
     def test_rejects_non_positive_issue_number(self):
         with pytest.raises(IssueToPrError, match="issue_number"):

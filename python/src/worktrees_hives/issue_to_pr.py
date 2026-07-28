@@ -42,13 +42,25 @@ _BRANCH_NAME_RE = re.compile(r"^(?!-)[A-Za-z0-9][A-Za-z0-9._/\-]*$")
 
 
 def _default_worktree_base() -> str:
-    """Platform-aware default under WH_WORKTREE_BASE / XDG / LOCALAPPDATA."""
+    """Platform-aware default under WH_WORKTREE_BASE / XDG / OS user-data dirs.
+
+    Kept aligned with ``claim._default_worktree_base`` (Windows LOCALAPPDATA,
+    macOS Application Support, else XDG / ``~/.local/share``).
+    """
     if override := os.environ.get("WH_WORKTREE_BASE"):
         return override
     if sys.platform == "win32":
         local = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
         if local:
             return os.path.join(local, "worktrees-hives", "worktrees")
+    if sys.platform == "darwin":
+        return os.path.join(
+            os.path.expanduser("~"),
+            "Library",
+            "Application Support",
+            "worktrees-hives",
+            "worktrees",
+        )
     xdg = os.environ.get("XDG_DATA_HOME")
     if xdg:
         return os.path.join(xdg, "worktrees-hives", "worktrees")

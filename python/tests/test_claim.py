@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import os
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 from worktrees_hives.claim import (
     ClaimError,
@@ -80,7 +78,10 @@ class TestValidation:
     def test_derive_path(self):
         mgr, _ = _manager()
         path = mgr.derive_path(TEST_OWNER, TEST_REPO, "gh-8")
-        assert path == "/tmp/wt-base/acme/example-repo/gh-8"
+        expected = os.path.abspath(
+            os.path.join("/tmp/wt-base", TEST_OWNER, TEST_REPO, "gh-8")
+        )
+        assert path == expected
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +125,7 @@ class TestClaimIssue:
         assert result.worktree_path == path
         args = wh.run.call_args[0]
         assert args[0:3] == ("worktree", "create", "--repo")
-        assert args[3] == "/tmp/repo"
+        assert args[3] == os.path.abspath("/tmp/repo")
         assert args[4:8] == (TEST_OWNER, TEST_REPO, "gh-8", "hive/gh-8")
 
     def test_rejects_non_positive_issue(self):
