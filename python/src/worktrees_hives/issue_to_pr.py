@@ -167,6 +167,24 @@ class IssueToPrResult:
 _NEVER_MERGE_MARKER = "<!-- worktrees-hives: never-auto-merge -->"
 
 
+def _is_forbidden_merge_cmd(cmd: list[str]) -> bool:
+    """True only for real merge invocations, not args equal to the word merge.
+
+    Matches ``gh pr merge``, ``gh api .../merges``, GraphQL ``mergePullRequest``,
+    and similar. A PR title/label of ``merge`` must not trip this guard.
+    """
+    if not cmd:
+        return False
+    for i, arg in enumerate(cmd):
+        if arg in ("mergePullRequest", "merge-pull-request"):
+            return True
+        if arg == "merge" and i > 0 and cmd[i - 1] in ("pr", "pull", "pulls"):
+            return True
+        if "/merges" in arg or arg.endswith("/merge"):
+            return True
+    return False
+
+
 class IssueToPr:
     """Drive an issue from intake to PR creation.
 
@@ -403,8 +421,8 @@ class IssueToPr:
         body = "\n\n".join(body_parts)
 
         cmd = self._gh_pr_create_cmd(branch_name, title, body)
-        # Never-merge: refuse any command that includes merge.
-        if "merge" in cmd:
+        # Never-merge: refuse merge subcommands (not labels/milestones named "merge").
+        if _is_forbidden_merge_cmd(cmd):
             self._step = Step.FAILED
             raise IssueToPrError(Step.BRANCH_PUSHED, "merge commands are forbidden")
 

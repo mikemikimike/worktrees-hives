@@ -81,9 +81,7 @@ class TestValidation:
     def test_derive_path(self):
         mgr, _ = _manager()
         path = mgr.derive_path(TEST_OWNER, TEST_REPO, "gh-8")
-        expected = os.path.abspath(
-            os.path.join("/tmp/wt-base", TEST_OWNER, TEST_REPO, "gh-8")
-        )
+        expected = os.path.abspath(os.path.join("/tmp/wt-base", TEST_OWNER, TEST_REPO, "gh-8"))
         assert path == expected
 
 
