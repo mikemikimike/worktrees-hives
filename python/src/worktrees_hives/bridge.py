@@ -57,25 +57,41 @@ def _resolve_wh_binary(explicit_path: str | None = None) -> str:
             raise WhBinaryNotFoundError(f"WH_BIN points to non-executable file: {env_path}")
         return env_path
 
-    # Walk PATH with str names only (avoids shutil.which PathLike deprecation on
-    # older Windows / Qodana PyDeprecationInspection). On Windows, honor PATHEXT
-    # so ``wh.exe`` resolves the same way as CreateProcess; do not prefer a
-    # bare ``wh`` file over extension-bearing candidates.
+    # Re-implement shutil.which("wh") for a str command while avoiding the
+    # PathLike deprecation overload that Qodana flags on older Windows Pythons.
+    # Semantics mirror the standard library: default PATH when unset, current-dir
+    # on Windows, PATHEXT extension matching, and empty PATH components treated as
+    # the current directory.
+    cmd = "wh"
+    path_env = os.environ.get("PATH")
+    if path_env is None:
+        try:
+            path_env = os.confstr("CS_PATH")
+        except (AttributeError, ValueError):
+            path_env = os.defpath
+    if not path_env:
+        raise WhBinaryNotFoundError()
+
+    path_dirs = path_env.split(os.pathsep)
     if sys.platform == "win32":
+        # Current directory takes precedence on Windows.
+        if os.curdir not in path_dirs:
+            path_dirs.insert(0, os.curdir)
         pathext = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
         extensions = [ext for ext in pathext.split(os.pathsep) if ext]
-        if any("wh".lower().endswith(ext.lower()) for ext in extensions):
-            names = ["wh"]
+        if any(cmd.lower().endswith(ext.lower()) for ext in extensions):
+            names = [cmd]
         else:
-            names = ["wh" + ext for ext in extensions]
-            names += ["wh" + ext.lower() for ext in extensions]
-            names = list(dict.fromkeys(names))
+            names = [cmd + ext for ext in extensions]
     else:
-        names = ["wh"]
-    path_env = os.environ.get("PATH", "")
-    for directory in path_env.split(os.pathsep):
-        if not directory:
+        names = [cmd]
+
+    seen: set[str] = set()
+    for directory in path_dirs:
+        normdir = os.path.normcase(directory)
+        if normdir in seen:
             continue
+        seen.add(normdir)
         for name in names:
             candidate = os.path.join(directory, name)
             if os.path.isfile(candidate) and os.access(candidate, os.X_OK):

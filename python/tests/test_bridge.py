@@ -75,7 +75,8 @@ class TestResolveWhBinary:
         bare = tmp_path / "wh"
         bare.write_text("not an executable")
         bare.chmod(0o755)
-        exe = tmp_path / "wh.exe"
+        # Use the uppercase extension that appears in the default Windows PATHEXT.
+        exe = tmp_path / "wh.EXE"
         exe.write_text("fake exe")
         exe.chmod(0o755)
 
