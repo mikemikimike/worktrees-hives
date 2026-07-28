@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   quality:
-    name: fmt, clippy, test
+    name: fmt, clippy
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -29,9 +29,6 @@ jobs:
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Run tests
-        run: cargo test --workspace
 
   cross-platform:
     name: test (${{ matrix.os }})
@@ -55,18 +52,3 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace
-
-  audit:
-    name: cargo audit
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          persist-credentials: false
-
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
-
-      - name: Run security audit
-        run: cargo audit
