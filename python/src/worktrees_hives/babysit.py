@@ -990,18 +990,10 @@ class BabysitCycle:
             return []
         try:
             raw = self.fix_handler(thread)
-        except (
-            TypeError,
-            ValueError,
-            RuntimeError,
-            OSError,
-            AttributeError,
-            KeyError,
-            subprocess.CalledProcessError,
-            subprocess.TimeoutExpired,
-        ):
-            # Narrow catch: fix handlers may fail on bad thread payloads, I/O, or
-            # subprocess failures — do not swallow BaseException / KeyboardInterrupt.
+        except Exception:
+            # Catch ordinary fix-handler failures (subprocess, network, validation,
+            # etc.) so one broken handler does not abort the cycle. BaseException
+            # subclasses such as KeyboardInterrupt remain uncaught.
             return []
         if not raw:
             return []

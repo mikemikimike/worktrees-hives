@@ -59,17 +59,19 @@ def _resolve_wh_binary(explicit_path: str | None = None) -> str:
 
     # Walk PATH with str names only (avoids shutil.which PathLike deprecation on
     # older Windows / Qodana PyDeprecationInspection). On Windows, honor PATHEXT
-    # so ``wh.exe`` resolves the same way as CreateProcess.
-    names = ["wh"]
+    # so ``wh.exe`` resolves the same way as CreateProcess; do not prefer a
+    # bare ``wh`` file over extension-bearing candidates.
     if sys.platform == "win32":
         pathext = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
-        for ext in pathext.split(os.pathsep):
-            if not ext:
-                continue
-            names.append("wh" + ext)
-            names.append("wh" + ext.lower())
-    # Preserve order, drop duplicates.
-    names = list(dict.fromkeys(names))
+        extensions = [ext for ext in pathext.split(os.pathsep) if ext]
+        if any("wh".lower().endswith(ext.lower()) for ext in extensions):
+            names = ["wh"]
+        else:
+            names = ["wh" + ext for ext in extensions]
+            names += ["wh" + ext.lower() for ext in extensions]
+            names = list(dict.fromkeys(names))
+    else:
+        names = ["wh"]
     path_env = os.environ.get("PATH", "")
     for directory in path_env.split(os.pathsep):
         if not directory:

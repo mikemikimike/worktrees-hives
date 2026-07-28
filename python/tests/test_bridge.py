@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -68,6 +69,27 @@ class TestResolveWhBinary:
         monkeypatch.setenv("PATH", "")
         with pytest.raises(WhBinaryNotFoundError, match="not found"):
             _resolve_wh_binary(None)
+
+    def test_windows_pathext_prefers_extension_over_bare_name(
+        self, tmp_path, monkeypatch
+    ):
+        """On Windows a bare ``wh`` file must not be chosen before ``wh.exe``."""
+        bare = tmp_path / "wh"
+        bare.write_text("not an executable")
+        bare.chmod(0o755)
+        exe = tmp_path / "wh.exe"
+        exe.write_text("fake exe")
+        exe.chmod(0o755)
+
+        monkeypatch.delenv("WH_BIN", raising=False)
+        monkeypatch.setenv("PATH", str(tmp_path))
+        monkeypatch.setenv(
+            "PATHEXT",
+            ".COM" + os.pathsep + ".EXE" + os.pathsep + ".BAT" + os.pathsep + ".CMD",
+        )
+        monkeypatch.setattr("worktrees_hives.bridge.sys.platform", "win32")
+        result = _resolve_wh_binary(None)
+        assert result == str(exe)
 
 
 # ---------------------------------------------------------------------------
