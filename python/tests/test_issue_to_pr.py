@@ -418,16 +418,20 @@ class TestNamingHelpers:
 
     def test_worktree_path_default_base(self, monkeypatch):
         monkeypatch.delenv("WH_WORKTREE_BASE", raising=False)
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
         cfg = _make_config(owner="acme", repo="example-repo", issue_number=8)
         orch = IssueToPr(config=cfg, wh_client=MagicMock())
         path = orch._worktree_path()
         parts = Path(path).parts
         assert parts[-3:] == ("acme", "example-repo", "issue-8")
+        posix_path = path.replace("\\", "/")
         if sys.platform == "win32":
             assert "worktrees-hives" in parts
             assert "worktrees" in parts
+        elif sys.platform == "darwin":
+            assert "Library/Application Support/worktrees-hives/worktrees" in posix_path
         else:
-            assert ".local/share/worktrees-hives/worktrees" in path.replace("\\", "/")
+            assert ".local/share/worktrees-hives/worktrees" in posix_path
 
     def test_worktree_path_custom_base(self, monkeypatch):
         monkeypatch.setenv("WH_WORKTREE_BASE", "/tmp/custom-wt")
