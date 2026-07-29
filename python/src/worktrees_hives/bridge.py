@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
+import sys
 
 from worktrees_hives.contract import (
     ErrorResponse,
@@ -57,9 +57,53 @@ def _resolve_wh_binary(explicit_path: str | None = None) -> str:
             raise WhBinaryNotFoundError(f"WH_BIN points to non-executable file: {env_path}")
         return env_path
 
-    found = shutil.which("wh")
-    if found is not None:
-        return found
+    # Re-implement shutil.which("wh") for a str command while avoiding the
+    # PathLike deprecation overload that Qodana flags on older Windows Pythons.
+    # Semantics mirror the standard library: default PATH when unset, current-dir
+    # on Windows, PATHEXT extension matching, and empty PATH components treated as
+    # the current directory.
+    cmd = "wh"
+    path_env = os.environ.get("PATH")
+    if path_env is None:
+        try:
+            path_env = os.confstr("CS_PATH")
+        except (AttributeError, ValueError):
+            path_env = os.defpath
+    if not path_env:
+        raise WhBinaryNotFoundError()
+
+    path_dirs = path_env.split(os.pathsep)
+    if sys.platform == "win32":
+        # Match shutil.which / NeedCurrentDirectoryForExePathW: only prepend cwd when
+        # NoDefaultCurrentDirectoryInExePath is unset. Always prepending cwd would
+        # let a repo-local wh.exe win over PATH (agent code-exec risk).
+        # Windows env name is mixed-case (not all-caps).
+        if (
+            not os.environ.get("NoDefaultCurrentDirectoryInExePath")  # noqa: SIM112
+            and os.curdir not in path_dirs
+        ):
+            path_dirs.insert(0, os.curdir)
+        # When PATHEXT is unset or empty, fall back to the standard Windows
+        # executable extensions; otherwise extensionless commands cannot be found.
+        pathext = os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
+        extensions = [ext for ext in pathext.split(os.pathsep) if ext]
+        if any(cmd.lower().endswith(ext.lower()) for ext in extensions):
+            names = [cmd]
+        else:
+            names = [cmd + ext for ext in extensions]
+    else:
+        names = [cmd]
+
+    seen: set[str] = set()
+    for directory in path_dirs:
+        normdir = os.path.normcase(directory)
+        if normdir in seen:
+            continue
+        seen.add(normdir)
+        for name in names:
+            candidate = os.path.join(directory, name)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
 
     raise WhBinaryNotFoundError()
 

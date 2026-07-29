@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -16,7 +18,43 @@ from worktrees_hives.issue_to_pr import (
     IssueToPrError,
     IssueToPrResult,
     Step,
+    _is_forbidden_merge_cmd,
 )
+
+
+class TestIsForbiddenMergeCmd:
+    """Structural never-merge guard must not scan metadata strings."""
+
+    def test_allows_create_with_merge_like_metadata(self):
+        cmd = [
+            "gh",
+            "pr",
+            "create",
+            "--repo",
+            "owner/merge",
+            "--head",
+            "h",
+            "--base",
+            "main",
+            "--title",
+            "t",
+            "--body",
+            "b",
+            "--label",
+            "merge",
+        ]
+        assert not _is_forbidden_merge_cmd(cmd)
+
+    def test_blocks_pr_merge(self):
+        assert _is_forbidden_merge_cmd(["gh", "pr", "merge", "12"])
+
+    def test_blocks_rest_merges_endpoint(self):
+        assert _is_forbidden_merge_cmd(["gh", "api", "repos/o/r/pulls/1/merges"])
+        assert _is_forbidden_merge_cmd(["gh", "api", "-X", "POST", "repos/o/r/pulls/1/merge"])
+
+    def test_allows_api_get_on_repo_named_merge(self):
+        assert not _is_forbidden_merge_cmd(["gh", "api", "repos/o/merge/pulls/1", "-X", "GET"])
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -416,17 +454,27 @@ class TestNamingHelpers:
 
     def test_worktree_path_default_base(self, monkeypatch):
         monkeypatch.delenv("WH_WORKTREE_BASE", raising=False)
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
         cfg = _make_config(owner="acme", repo="example-repo", issue_number=8)
         orch = IssueToPr(config=cfg, wh_client=MagicMock())
         path = orch._worktree_path()
-        assert path.endswith("acme/example-repo/issue-8")
-        assert ".local/share/worktrees-hives/worktrees" in path
+        parts = Path(path).parts
+        assert parts[-3:] == ("acme", "example-repo", "issue-8")
+        posix_path = path.replace("\\", "/")
+        if sys.platform == "win32":
+            assert "worktrees-hives" in parts
+            assert "worktrees" in parts
+        elif sys.platform == "darwin":
+            assert "Library/Application Support/worktrees-hives/worktrees" in posix_path
+        else:
+            assert ".local/share/worktrees-hives/worktrees" in posix_path
 
     def test_worktree_path_custom_base(self, monkeypatch):
         monkeypatch.setenv("WH_WORKTREE_BASE", "/tmp/custom-wt")
         cfg = _make_config(owner="o", repo="r", issue_number=5)
         orch = IssueToPr(config=cfg, wh_client=MagicMock())
-        assert orch._worktree_path() == "/tmp/custom-wt/o/r/issue-5"
+        expected = str(Path("/tmp/custom-wt") / "o" / "r" / "issue-5")
+        assert orch._worktree_path() == expected
 
     def test_custom_remote_in_push(self, monkeypatch):
         """Custom remote name should be used in git push."""
@@ -646,7 +694,8 @@ class TestRemotePathBaseRejection:
         cfg = _make_config(owner="acme", repo="example-repo", issue_number=3)
         orch = IssueToPr(config=cfg, wh_client=MagicMock())
         path = orch._worktree_path()
-        assert path == "/tmp/wt-base/acme/example-repo/issue-3"
+        expected = str(Path("/tmp/wt-base") / "acme" / "example-repo" / "issue-3")
+        assert path == expected
 
     def test_rejects_non_positive_issue_number(self):
         with pytest.raises(IssueToPrError, match="issue_number"):

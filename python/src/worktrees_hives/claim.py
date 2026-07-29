@@ -242,7 +242,8 @@ class ClaimManager:
         if prune:
             self._wh_run("worktree", "prune", "--repo", self.repo_root)
 
-    def verify_isolation(self, result: ClaimResult) -> None:
+    @staticmethod
+    def verify_isolation(result: ClaimResult) -> None:
         """Filesystem isolation check (no git): path exists and is a directory."""
         path = Path(result.worktree_path)
         if not path.is_dir():
@@ -305,7 +306,8 @@ class ClaimManager:
         except WhError as exc:
             raise ClaimError(str(exc)) from exc
 
-    def _check_isolation(self, path: str, returned_branch: str, expected_branch: str) -> None:
+    @staticmethod
+    def _check_isolation(path: str, returned_branch: str, expected_branch: str) -> None:
         if returned_branch != expected_branch:
             raise IsolationError(
                 f"wh returned branch {returned_branch!r}, expected {expected_branch!r}"
@@ -316,7 +318,8 @@ class ClaimManager:
         if p.exists() and not p.is_dir():
             raise IsolationError(f"worktree path is not a directory: {path}")
 
-    def _assert_not_exists(self, worktree_path: str) -> None:
+    @staticmethod
+    def _assert_not_exists(worktree_path: str) -> None:
         if Path(worktree_path).exists():
             raise ClaimExistsError(f"worktree already exists for this job: {worktree_path}")
 

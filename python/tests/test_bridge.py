@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -55,11 +57,15 @@ class TestResolveWhBinary:
             _resolve_wh_binary(None)
 
     def test_path_fallback(self, tmp_path, monkeypatch):
-        binary = tmp_path / "wh"
-        binary.write_text("#!/bin/sh")
-        binary.chmod(0o755)
         monkeypatch.delenv("WH_BIN", raising=False)
         monkeypatch.setenv("PATH", str(tmp_path))
+        # Windows executable lookup requires a PATHEXT extension; POSIX does not.
+        if sys.platform == "win32":
+            binary = tmp_path / "wh.EXE"
+        else:
+            binary = tmp_path / "wh"
+        binary.write_text("fake binary")
+        binary.chmod(0o755)
         result = _resolve_wh_binary(None)
         assert result == str(binary)
 
@@ -68,6 +74,64 @@ class TestResolveWhBinary:
         monkeypatch.setenv("PATH", "")
         with pytest.raises(WhBinaryNotFoundError, match="not found"):
             _resolve_wh_binary(None)
+
+    def test_windows_pathext_prefers_extension_over_bare_name(self, tmp_path, monkeypatch):
+        """On Windows a bare ``wh`` file must not be chosen before ``wh.exe``."""
+        bare = tmp_path / "wh"
+        bare.write_text("not an executable")
+        bare.chmod(0o755)
+        # Use the uppercase extension that appears in the default Windows PATHEXT.
+        exe = tmp_path / "wh.EXE"
+        exe.write_text("fake exe")
+        exe.chmod(0o755)
+
+        monkeypatch.delenv("WH_BIN", raising=False)
+        monkeypatch.setenv("PATH", str(tmp_path))
+        monkeypatch.setenv(
+            "PATHEXT",
+            ".COM" + os.pathsep + ".EXE" + os.pathsep + ".BAT" + os.pathsep + ".CMD",
+        )
+        monkeypatch.setattr("worktrees_hives.bridge.sys.platform", "win32")
+        result = _resolve_wh_binary(None)
+        assert result == str(exe)
+
+    def test_windows_no_default_curdir_skips_cwd(self, tmp_path, monkeypatch):
+        """When NoDefaultCurrentDirectoryInExePath is set, do not prefer cwd wh.exe."""
+        cwd_exe = tmp_path / "wh.EXE"
+        cwd_exe.write_text("cwd fake")
+        cwd_exe.chmod(0o755)
+        trusted = tmp_path / "bin"
+        trusted.mkdir()
+        path_exe = trusted / "wh.EXE"
+        path_exe.write_text("path fake")
+        path_exe.chmod(0o755)
+
+        monkeypatch.delenv("WH_BIN", raising=False)
+        monkeypatch.setenv("PATH", str(trusted))
+        monkeypatch.setenv("NoDefaultCurrentDirectoryInExePath", "1")
+        monkeypatch.setenv(
+            "PATHEXT",
+            ".COM" + os.pathsep + ".EXE" + os.pathsep + ".BAT" + os.pathsep + ".CMD",
+        )
+        monkeypatch.setattr("worktrees_hives.bridge.sys.platform", "win32")
+        monkeypatch.chdir(tmp_path)
+        result = _resolve_wh_binary(None)
+        assert result == str(path_exe)
+
+    def test_windows_empty_pathext_uses_default_extensions(self, tmp_path, monkeypatch):
+        """An empty PATHEXT string must fall back to the default extensions."""
+        exe = tmp_path / "wh.EXE"
+        exe.write_text("fake exe")
+        exe.chmod(0o755)
+
+        monkeypatch.delenv("WH_BIN", raising=False)
+        # Simulate Windows path/PATHEXT separators while the platform is monkeypatched.
+        monkeypatch.setattr("os.pathsep", ";")
+        monkeypatch.setenv("PATH", str(tmp_path))
+        monkeypatch.setenv("PATHEXT", "")
+        monkeypatch.setattr("worktrees_hives.bridge.sys.platform", "win32")
+        result = _resolve_wh_binary(None)
+        assert result == str(exe)
 
 
 # ---------------------------------------------------------------------------

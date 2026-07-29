@@ -638,6 +638,55 @@ class TestBabysitCycle:
         mock_reply.assert_called_once()
         mock_resolve.assert_called_once_with("T1", owner="acme", allowed_owners=frozenset({"acme"}))
 
+    @patch("worktrees_hives.babysit.resolve_thread")
+    @patch("worktrees_hives.babysit.reply_to_thread")
+    @patch("worktrees_hives.babysit._run_gh")
+    @patch("worktrees_hives.babysit.fetch_review_threads")
+    @patch("worktrees_hives.babysit.fetch_pr_checks", return_value=[])
+    @patch("worktrees_hives.babysit.fetch_pr_status")
+    def test_fix_handler_exception_is_treated_as_no_fix(
+        self,
+        mock_status: MagicMock,
+        mock_checks: MagicMock,
+        mock_threads: MagicMock,
+        mock_gh: MagicMock,
+        mock_reply: MagicMock,
+        mock_resolve: MagicMock,
+    ) -> None:
+        """An unlisted exception from the fix handler must not abort the cycle."""
+        mock_status.return_value = _make_pr_data()
+        mock_threads.return_value = [
+            ReviewThread(
+                thread_id="T1",
+                comments=[
+                    {
+                        "author": {"login": "bot"},
+                        "path": "main.rs",
+                        "line": 10,
+                        "body": "Please fix this bug",
+                        "databaseId": 100,
+                        "url": "https://example.com",
+                    }
+                ],
+            ),
+        ]
+
+        def broken_handler(_thread: ReviewThread) -> str:
+            raise ConnectionError("network down")
+
+        cycle = BabysitCycle(
+            owner="acme",
+            repo="repo",
+            pr_number=1,
+            fix_handler=broken_handler,
+        )
+        result = cycle.run()
+        assert result.threads_resolved == 0
+        assert result.threads_remaining == 1
+        mock_resolve.assert_not_called()
+        mock_reply.assert_called_once()
+        assert any("real code fix" in b for b in result.residual_blockers)
+
     @patch("worktrees_hives.babysit.post_pr_comment")
     @patch("worktrees_hives.babysit.resolve_thread")
     @patch("worktrees_hives.babysit.reply_to_thread")

@@ -191,7 +191,7 @@ class Stack:
         if self.is_cyclic:
             return []
         result = []
-        for m in sorted(self.members, key=lambda m: m.stack_position):
+        for m in sorted(self.members, key=lambda member: member.stack_position):
             if m.pr.state != PRState.OPEN:
                 continue
             if self._is_ancestor_chain_healthy(m.pr.number, stack_health):

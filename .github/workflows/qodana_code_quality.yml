@@ -1,0 +1,48 @@
+name: Qodana
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: # Specify your branches here
+      - main # The 'main' branch
+      - 'releases/*' # The release branches
+
+jobs:
+  qodana:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # PR head when present; otherwise the event SHA (push / workflow_dispatch).
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0  # a full history is required for pull request analysis
+          # Do not leave the job token in .git after checkout: pip install -e runs
+          # untrusted packaging code from the PR head.
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        id: setup-python
+        with:
+          python-version: '3.14'
+      - name: Install Python dependencies
+        working-directory: python
+        run: pip install -e ".[test]"
+      - name: 'Qodana Scan'
+        uses: JetBrains/qodana-action@v2026.1
+        with:
+          # PR-delta analysis only on pull_request; full scan on push/dispatch.
+          pr-mode: ${{ github.event_name == 'pull_request' }}
+          # Space-separated args (comma-separated form is deprecated by qodana-action).
+          # Force community linter + project-dir so scan args are workflow-controlled.
+          args: --linter qodana-python-community --project-dir=python --within-docker=false
+        env:
+          # Never inject the cloud token into PR jobs: checkout head can control
+          # qodana.yaml bootstrap and would run with QODANA_TOKEN in the environment.
+          # Token is only for push/workflow_dispatch (trusted refs).
+          QODANA_TOKEN: ${{ github.event_name != 'pull_request' && secrets.QODANA_TOKEN_1561455798 || '' }}
+          QODANA_ENDPOINT: 'https://qodana.cloud'
+          QODANA_PYTHON_PATH: ${{ steps.setup-python.outputs.python-path }}
+          JAVA_TOOL_OPTIONS: --enable-native-access=ALL-UNNAMED --sun-misc-unsafe-memory-access=allow

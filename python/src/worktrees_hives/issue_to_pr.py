@@ -42,13 +42,25 @@ _BRANCH_NAME_RE = re.compile(r"^(?!-)[A-Za-z0-9][A-Za-z0-9._/\-]*$")
 
 
 def _default_worktree_base() -> str:
-    """Platform-aware default under WH_WORKTREE_BASE / XDG / LOCALAPPDATA."""
+    """Platform-aware default under WH_WORKTREE_BASE / XDG / OS user-data dirs.
+
+    Kept aligned with ``claim._default_worktree_base`` (Windows LOCALAPPDATA,
+    macOS Application Support, else XDG / ``~/.local/share``).
+    """
     if override := os.environ.get("WH_WORKTREE_BASE"):
         return override
     if sys.platform == "win32":
         local = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
         if local:
             return os.path.join(local, "worktrees-hives", "worktrees")
+    if sys.platform == "darwin":
+        return os.path.join(
+            os.path.expanduser("~"),
+            "Library",
+            "Application Support",
+            "worktrees-hives",
+            "worktrees",
+        )
     xdg = os.environ.get("XDG_DATA_HOME")
     if xdg:
         return os.path.join(xdg, "worktrees-hives", "worktrees")
@@ -153,6 +165,53 @@ class IssueToPrResult:
 
 # Never-merge safety constant — used in PR body to make intent explicit.
 _NEVER_MERGE_MARKER = "<!-- worktrees-hives: never-auto-merge -->"
+
+
+def _is_forbidden_merge_cmd(cmd: list[str]) -> bool:
+    """True for merge *subcommands/endpoints* by structure, not metadata text.
+
+    Scans ``gh`` argv positionally so a repo named ``owner/merge``, a label
+    ``merge``, or a title containing ``/merges`` cannot false-positive.
+    Matches ``gh pr merge``, REST ``.../merges`` (or ``.../merge``) after
+    ``gh api``, and GraphQL ``mergePullRequest`` tokens.
+    """
+    if len(cmd) < 2:
+        return False
+    # Drop binary (may be a path to gh).
+    args = list(cmd[1:])
+    for i in range(len(args) - 1):
+        if args[i] == "pr" and args[i + 1] == "merge":
+            return True
+    for i, a in enumerate(args):
+        if a != "api":
+            continue
+        j = i + 1
+        # Skip flags (and one following value for common value-taking flags).
+        value_flags = {
+            "-X",
+            "--method",
+            "-H",
+            "-f",
+            "-F",
+            "--jq",
+            "--input",
+            "--field",
+            "--raw-field",
+            "--header",
+        }
+        while j < len(args) and args[j].startswith("-"):
+            if args[j] in value_flags:
+                j += 2
+            else:
+                j += 1
+        if j < len(args):
+            endpoint = args[j].rstrip("/")
+            if endpoint.endswith("/merges") or endpoint.endswith("/merge"):
+                return True
+            if "mergePullRequest" in endpoint:
+                return True
+        break
+    return "mergePullRequest" in args or "merge-pull-request" in args
 
 
 class IssueToPr:
@@ -391,8 +450,8 @@ class IssueToPr:
         body = "\n\n".join(body_parts)
 
         cmd = self._gh_pr_create_cmd(branch_name, title, body)
-        # Never-merge: refuse any command that includes merge.
-        if "merge" in cmd:
+        # Never-merge: refuse merge subcommands (not labels/milestones named "merge").
+        if _is_forbidden_merge_cmd(cmd):
             self._step = Step.FAILED
             raise IssueToPrError(Step.BRANCH_PUSHED, "merge commands are forbidden")
 
@@ -524,33 +583,33 @@ def _validate_remote_name(remote: str) -> None:
         )
 
 
-def _validate_branch_name(field: str, value: str) -> None:
+def _validate_branch_name(field_name: str, value: str) -> None:
     """Reject empty or option-looking branch/ref names (e.g. ``--force``)."""
     if not value or not _BRANCH_NAME_RE.fullmatch(value) or value.startswith("-"):
         raise IssueToPrError(
             Step.INIT,
-            f"Invalid {field} {value!r}: must be a plain git ref, "
+            f"Invalid {field_name} {value!r}: must be a plain git ref, "
             "not empty or option-looking (e.g. --force)",
         )
 
 
-def _validate_path_segment(field: str, value: str) -> None:
+def _validate_path_segment(field_name: str, value: str) -> None:
     """Reject path-traversal and absolute components in owner/repo segments."""
     if not value or value in (".", ".."):
-        raise IssueToPrError(Step.INIT, f"Invalid {field} segment: {value!r}")
+        raise IssueToPrError(Step.INIT, f"Invalid {field_name} segment: {value!r}")
     # Reject separators and drive-style absolute components.
     if "/" in value or "\\" in value or ":" in value:
         raise IssueToPrError(
             Step.INIT,
-            f"Invalid {field} segment (contains separator): {value!r}",
+            f"Invalid {field_name} segment (contains separator): {value!r}",
         )
     if value.startswith("-"):
         raise IssueToPrError(
             Step.INIT,
-            f"Invalid {field} segment (option-looking): {value!r}",
+            f"Invalid {field_name} segment (option-looking): {value!r}",
         )
     # Reject absolute or multi-component pure paths on either OS convention.
     for pure in (PurePosixPath(value), PureWindowsPath(value)):
         parts = pure.parts
         if len(parts) != 1 or parts[0] in (".", "..") or pure.is_absolute():
-            raise IssueToPrError(Step.INIT, f"Invalid {field} segment: {value!r}")
+            raise IssueToPrError(Step.INIT, f"Invalid {field_name} segment: {value!r}")
