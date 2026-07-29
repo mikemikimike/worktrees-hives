@@ -36,9 +36,13 @@ jobs:
           # PR-delta analysis only on pull_request; full scan on push/dispatch.
           pr-mode: ${{ github.event_name == 'pull_request' }}
           # Space-separated args (comma-separated form is deprecated by qodana-action).
+          # Force community linter + project-dir so scan args are workflow-controlled.
           args: --linter qodana-python-community --project-dir=python --within-docker=false
         env:
-          QODANA_TOKEN: ${{ secrets.QODANA_TOKEN_1561455798 }}
+          # Never inject the cloud token into PR jobs: checkout head can control
+          # qodana.yaml bootstrap and would run with QODANA_TOKEN in the environment.
+          # Token is only for push/workflow_dispatch (trusted refs).
+          QODANA_TOKEN: ${{ github.event_name != 'pull_request' && secrets.QODANA_TOKEN_1561455798 || '' }}
           QODANA_ENDPOINT: 'https://qodana.cloud'
           QODANA_PYTHON_PATH: ${{ steps.setup-python.outputs.python-path }}
           JAVA_TOOL_OPTIONS: --enable-native-access=ALL-UNNAMED --sun-misc-unsafe-memory-access=allow

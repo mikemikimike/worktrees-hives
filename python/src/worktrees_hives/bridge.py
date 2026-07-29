@@ -74,8 +74,14 @@ def _resolve_wh_binary(explicit_path: str | None = None) -> str:
 
     path_dirs = path_env.split(os.pathsep)
     if sys.platform == "win32":
-        # Current directory takes precedence on Windows.
-        if os.curdir not in path_dirs:
+        # Match shutil.which / NeedCurrentDirectoryForExePathW: only prepend cwd when
+        # NoDefaultCurrentDirectoryInExePath is unset. Always prepending cwd would
+        # let a repo-local wh.exe win over PATH (agent code-exec risk).
+        # Windows env name is mixed-case (not all-caps).
+        if (
+            not os.environ.get("NoDefaultCurrentDirectoryInExePath")  # noqa: SIM112
+            and os.curdir not in path_dirs
+        ):
             path_dirs.insert(0, os.curdir)
         pathext = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
         extensions = [ext for ext in pathext.split(os.pathsep) if ext]

@@ -95,6 +95,29 @@ class TestResolveWhBinary:
         result = _resolve_wh_binary(None)
         assert result == str(exe)
 
+    def test_windows_no_default_curdir_skips_cwd(self, tmp_path, monkeypatch):
+        """When NoDefaultCurrentDirectoryInExePath is set, do not prefer cwd wh.exe."""
+        cwd_exe = tmp_path / "wh.EXE"
+        cwd_exe.write_text("cwd fake")
+        cwd_exe.chmod(0o755)
+        trusted = tmp_path / "bin"
+        trusted.mkdir()
+        path_exe = trusted / "wh.EXE"
+        path_exe.write_text("path fake")
+        path_exe.chmod(0o755)
+
+        monkeypatch.delenv("WH_BIN", raising=False)
+        monkeypatch.setenv("PATH", str(trusted))
+        monkeypatch.setenv("NoDefaultCurrentDirectoryInExePath", "1")
+        monkeypatch.setenv(
+            "PATHEXT",
+            ".COM" + os.pathsep + ".EXE" + os.pathsep + ".BAT" + os.pathsep + ".CMD",
+        )
+        monkeypatch.setattr("worktrees_hives.bridge.sys.platform", "win32")
+        monkeypatch.chdir(tmp_path)
+        result = _resolve_wh_binary(None)
+        assert result == str(path_exe)
+
 
 # ---------------------------------------------------------------------------
 # Response.from_dict validation
