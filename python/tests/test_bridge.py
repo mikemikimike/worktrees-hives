@@ -118,6 +118,21 @@ class TestResolveWhBinary:
         result = _resolve_wh_binary(None)
         assert result == str(path_exe)
 
+    def test_windows_empty_pathext_uses_default_extensions(self, tmp_path, monkeypatch):
+        """An empty PATHEXT string must fall back to the default extensions."""
+        exe = tmp_path / "wh.EXE"
+        exe.write_text("fake exe")
+        exe.chmod(0o755)
+
+        monkeypatch.delenv("WH_BIN", raising=False)
+        # Simulate Windows path/PATHEXT separators while the platform is monkeypatched.
+        monkeypatch.setattr("os.pathsep", ";")
+        monkeypatch.setenv("PATH", str(tmp_path))
+        monkeypatch.setenv("PATHEXT", "")
+        monkeypatch.setattr("worktrees_hives.bridge.sys.platform", "win32")
+        result = _resolve_wh_binary(None)
+        assert result == str(exe)
+
 
 # ---------------------------------------------------------------------------
 # Response.from_dict validation

@@ -83,7 +83,9 @@ def _resolve_wh_binary(explicit_path: str | None = None) -> str:
             and os.curdir not in path_dirs
         ):
             path_dirs.insert(0, os.curdir)
-        pathext = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        # When PATHEXT is unset or empty, fall back to the standard Windows
+        # executable extensions; otherwise extensionless commands cannot be found.
+        pathext = os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
         extensions = [ext for ext in pathext.split(os.pathsep) if ext]
         if any(cmd.lower().endswith(ext.lower()) for ext in extensions):
             names = [cmd]
