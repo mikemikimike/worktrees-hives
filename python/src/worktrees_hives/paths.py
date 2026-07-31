@@ -4,6 +4,13 @@ Worktree root layout (override with ``WH_WORKTREE_BASE``)::
 
     {platform data}/worktrees-hives/worktrees
 
+Must match Rust ``wh-core`` ``user_data_dir()`` + ``worktree_base_path()``
+(``crates/wh-core/src/paths.rs``):
+
+- Windows: ``%APPDATA%`` (fallback: ``%USERPROFILE%\\AppData\\Roaming``)
+- macOS: ``~/Library/Application Support``
+- Unix/Linux: ``$XDG_DATA_HOME`` or ``~/.local/share``
+
 This is the single source of truth for the Python orchestrator default.
 ``claim`` and ``issue_to_pr`` must import from here — do not reimplement.
 """
@@ -37,39 +44,29 @@ def default_worktree_base(*, platform: str | None = None) -> str:
         return override
 
     plat = sys.platform if platform is None else platform
+    return os.path.join(_user_data_dir(plat), "worktrees-hives", "worktrees")
 
+
+def _user_data_dir(plat: str) -> str:
+    """Mirror Rust ``wh-core::paths::user_data_dir`` platform branches."""
     if plat == "win32":
-        local = _env_nonempty("LOCALAPPDATA") or _env_nonempty("APPDATA")
-        if local:
-            return os.path.join(local, "worktrees-hives", "worktrees")
-        # No standard AppData env: prefer USERPROFILE\\AppData\\Local, else home.
+        # Prefer APPDATA (Roaming), not LOCALAPPDATA — must match wh-core.
+        appdata = _env_nonempty("APPDATA")
+        if appdata:
+            return appdata
         profile = _env_nonempty("USERPROFILE")
         if profile:
-            return os.path.join(profile, "AppData", "Local", "worktrees-hives", "worktrees")
-        return os.path.join(
-            os.path.expanduser("~"),
-            "AppData",
-            "Local",
-            "worktrees-hives",
-            "worktrees",
-        )
+            return os.path.join(profile, "AppData", "Roaming")
+        return os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
 
     if plat == "darwin":
         return os.path.join(
             os.path.expanduser("~"),
             "Library",
             "Application Support",
-            "worktrees-hives",
-            "worktrees",
         )
 
     xdg = _env_nonempty("XDG_DATA_HOME")
     if xdg:
-        return os.path.join(xdg, "worktrees-hives", "worktrees")
-    return os.path.join(
-        os.path.expanduser("~"),
-        ".local",
-        "share",
-        "worktrees-hives",
-        "worktrees",
-    )
+        return xdg
+    return os.path.join(os.path.expanduser("~"), ".local", "share")

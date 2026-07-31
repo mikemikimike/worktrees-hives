@@ -2,6 +2,8 @@
 
 Parameterized platform overrides ensure the macOS / Windows / XDG branches
 run on every CI OS (linux, macos, windows runners all exercise all branches).
+
+Windows selection must match Rust ``wh-core`` (APPDATA / Roaming, not Local).
 """
 
 from __future__ import annotations
@@ -43,15 +45,19 @@ class TestDefaultWorktreeBase:
         assert "Library" in Path(result).parts
         assert "Application Support" in Path(result).parts
 
-    def test_win32_localappdata(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_win32_prefers_appdata_over_localappdata(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Rust wh-core uses APPDATA (Roaming); must not pick LOCALAPPDATA."""
         monkeypatch.delenv("WH_WORKTREE_BASE", raising=False)
         monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\ci\AppData\Local")
-        monkeypatch.delenv("APPDATA", raising=False)
+        monkeypatch.setenv("APPDATA", r"C:\Users\ci\AppData\Roaming")
 
         result = default_worktree_base(platform="win32")
-        assert result == os.path.join(r"C:\Users\ci\AppData\Local", "worktrees-hives", "worktrees")
+        assert result == os.path.join(
+            r"C:\Users\ci\AppData\Roaming", "worktrees-hives", "worktrees"
+        )
+        assert "Local" not in Path(result).parts
 
-    def test_win32_falls_back_to_appdata(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_win32_appdata_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("WH_WORKTREE_BASE", raising=False)
         monkeypatch.delenv("LOCALAPPDATA", raising=False)
         monkeypatch.setenv("APPDATA", r"C:\Users\ci\AppData\Roaming")
@@ -61,10 +67,8 @@ class TestDefaultWorktreeBase:
             r"C:\Users\ci\AppData\Roaming", "worktrees-hives", "worktrees"
         )
 
-    def test_win32_falls_back_to_userprofile_when_appdata_unset(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """No LOCALAPPDATA/APPDATA must not fall through to darwin/Unix paths."""
+    def test_win32_falls_back_to_userprofile_roaming(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No APPDATA must not fall through to darwin/Unix paths."""
         monkeypatch.delenv("WH_WORKTREE_BASE", raising=False)
         monkeypatch.delenv("LOCALAPPDATA", raising=False)
         monkeypatch.delenv("APPDATA", raising=False)
@@ -72,19 +76,20 @@ class TestDefaultWorktreeBase:
 
         result = default_worktree_base(platform="win32")
         assert result == os.path.join(
-            r"C:\Users\ci", "AppData", "Local", "worktrees-hives", "worktrees"
+            r"C:\Users\ci", "AppData", "Roaming", "worktrees-hives", "worktrees"
         )
         assert "Library" not in result
         assert ".local" not in result
+        assert "Local" not in Path(result).parts
 
-    def test_win32_ignores_empty_localappdata(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_win32_ignores_empty_appdata(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("WH_WORKTREE_BASE", raising=False)
-        monkeypatch.setenv("LOCALAPPDATA", "")
-        monkeypatch.setenv("APPDATA", r"C:\Users\ci\AppData\Roaming")
+        monkeypatch.setenv("APPDATA", "")
+        monkeypatch.setenv("USERPROFILE", r"C:\Users\ci")
 
         result = default_worktree_base(platform="win32")
         assert result == os.path.join(
-            r"C:\Users\ci\AppData\Roaming", "worktrees-hives", "worktrees"
+            r"C:\Users\ci", "AppData", "Roaming", "worktrees-hives", "worktrees"
         )
 
     def test_xdg_data_home(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -125,15 +130,14 @@ class TestDefaultWorktreeBase:
 
         result = default_worktree_base(platform=platform)
         if platform == "win32":
-            assert result == os.path.join(r"C:\Local", "worktrees-hives", "worktrees")
+            # APPDATA wins even when LOCALAPPDATA is set (Rust parity).
+            assert result == os.path.join(r"C:\Roaming", "worktrees-hives", "worktrees")
         elif platform == "darwin":
             assert "Application Support" in result
             assert result.endswith(os.path.join("worktrees-hives", "worktrees")) or result.replace(
                 "\\", "/"
             ).endswith("worktrees-hives/worktrees")
-            assert os.path.join(home, "Library") in result or result.startswith(
-                os.path.join(home, "Library")
-            )
+            assert result.startswith(os.path.join(home, "Library"))
         else:
             assert ".local" in Path(result).parts
             assert result == os.path.join(home, ".local", "share", "worktrees-hives", "worktrees")
@@ -150,7 +154,6 @@ class TestSharedImport:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("WH_WORKTREE_BASE", "/tmp/shared-factory-base")
-        # Avoid requiring a real WhClient for path-only check.
         from unittest.mock import MagicMock
 
         mgr = claim.ClaimManager(wh_client=MagicMock())
