@@ -61,6 +61,32 @@ class TestDefaultWorktreeBase:
             r"C:\Users\ci\AppData\Roaming", "worktrees-hives", "worktrees"
         )
 
+    def test_win32_falls_back_to_userprofile_when_appdata_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No LOCALAPPDATA/APPDATA must not fall through to darwin/Unix paths."""
+        monkeypatch.delenv("WH_WORKTREE_BASE", raising=False)
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.delenv("APPDATA", raising=False)
+        monkeypatch.setenv("USERPROFILE", r"C:\Users\ci")
+
+        result = default_worktree_base(platform="win32")
+        assert result == os.path.join(
+            r"C:\Users\ci", "AppData", "Local", "worktrees-hives", "worktrees"
+        )
+        assert "Library" not in result
+        assert ".local" not in result
+
+    def test_win32_ignores_empty_localappdata(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("WH_WORKTREE_BASE", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", "")
+        monkeypatch.setenv("APPDATA", r"C:\Users\ci\AppData\Roaming")
+
+        result = default_worktree_base(platform="win32")
+        assert result == os.path.join(
+            r"C:\Users\ci\AppData\Roaming", "worktrees-hives", "worktrees"
+        )
+
     def test_xdg_data_home(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("WH_WORKTREE_BASE", raising=False)
         monkeypatch.setenv("XDG_DATA_HOME", "/var/data")
