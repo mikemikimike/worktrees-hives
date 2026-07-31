@@ -17,11 +17,13 @@ from worktrees_hives.claim import (
     ClaimManager,
     ClaimResult,
     IsolationError,
+    _default_worktree_base,
     _validate_ref,
     _validate_segment,
 )
 from worktrees_hives.contract import ErrorData, ErrorResponse, SuccessResponse
 from worktrees_hives.errors import PolicyError, WhBinaryNotFoundError, WhProcessError
+from worktrees_hives.paths import default_worktree_base
 
 TEST_OWNER = "acme"
 TEST_REPO = "example-repo"
@@ -83,6 +85,24 @@ class TestValidation:
         path = mgr.derive_path(TEST_OWNER, TEST_REPO, "gh-8")
         expected = os.path.abspath(os.path.join("/tmp/wt-base", TEST_OWNER, TEST_REPO, "gh-8"))
         assert path == expected
+
+    def test_default_worktree_base_is_shared_helper(self):
+        assert _default_worktree_base is default_worktree_base
+
+    def test_default_worktree_base_darwin_branch(self, monkeypatch):
+        """macOS branch of claim's default must run on every CI runner."""
+        monkeypatch.delenv("WH_WORKTREE_BASE", raising=False)
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+        home = "/claim-test-home"
+        monkeypatch.setattr(os.path, "expanduser", lambda p: home if p == "~" else p)
+        result = _default_worktree_base(platform="darwin")
+        assert result == os.path.join(
+            home,
+            "Library",
+            "Application Support",
+            "worktrees-hives",
+            "worktrees",
+        )
 
 
 # ---------------------------------------------------------------------------
