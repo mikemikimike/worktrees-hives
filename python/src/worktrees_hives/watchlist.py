@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from worktrees_hives.errors import PolicyError
+from worktrees_hives.paths import _env_nonempty, user_data_dir
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -96,40 +97,6 @@ class JobState:
 _JOB_STATE_FIELDS: frozenset[str] = frozenset(f.name for f in fields(JobState))
 
 
-def _env_nonempty(name: str) -> str | None:
-    """Return env var value if set and non-empty; empty string counts as unset.
-
-    Mirrors Rust ``paths.rs`` (filter empty XDG/LOCALAPPDATA so we never
-    resolve a CWD-relative data root).
-    """
-    value = os.environ.get(name)
-    if value is None or value == "":
-        return None
-    return value
-
-
-def _platform_data_dir() -> Path:
-    """Return a platform-aware user data directory for worktrees-hives.
-
-    Matches Rust ``wh-core`` paths.rs: Windows uses %APPDATA% (Roaming), not Local.
-    """
-    if sys.platform == "win32":
-        base = _env_nonempty("APPDATA")
-        if base:
-            return Path(base) / "worktrees-hives"
-        profile = _env_nonempty("USERPROFILE")
-        if profile:
-            return Path(profile) / "AppData" / "Roaming" / "worktrees-hives"
-        return Path.home() / "AppData" / "Roaming" / "worktrees-hives"
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "worktrees-hives"
-    # Linux / other Unix: XDG — empty XDG_DATA_HOME must not become Path('')/…
-    xdg_data = _env_nonempty("XDG_DATA_HOME")
-    if xdg_data:
-        return Path(xdg_data) / "worktrees-hives"
-    return Path.home() / ".local" / "share" / "worktrees-hives"
-
-
 def _default_state_path() -> Path:
     """Return the default Python watchlist state file path.
 
@@ -139,7 +106,7 @@ def _default_state_path() -> Path:
     env_path = _env_nonempty(WH_WATCHLIST_PATH_ENV)
     if env_path:
         return Path(env_path)
-    return _platform_data_dir() / STATE_FILENAME
+    return Path(user_data_dir()) / "worktrees-hives" / STATE_FILENAME
 
 
 @contextlib.contextmanager
