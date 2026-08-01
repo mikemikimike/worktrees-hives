@@ -9,6 +9,7 @@ Windows selection must match Rust ``wh-core`` (APPDATA / Roaming, not Local).
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -141,6 +142,26 @@ class TestDefaultWorktreeBase:
         else:
             assert ".local" in Path(result).parts
             assert result == os.path.join(home, ".local", "share", "worktrees-hives", "worktrees")
+
+    def test_win32_falls_back_to_temp_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No APPDATA, USERPROFILE, or home should fall back to the OS temp dir."""
+        monkeypatch.delenv("WH_WORKTREE_BASE", raising=False)
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.delenv("APPDATA", raising=False)
+        monkeypatch.delenv("USERPROFILE", raising=False)
+
+        result = default_worktree_base(platform="win32")
+        assert result == os.path.join(tempfile.gettempdir(), "worktrees-hives", "worktrees")
+        assert "AppData" not in result
+        assert "Library" not in result
+        assert ".local" not in result
+
+    def test_user_data_dir_is_exposed(self) -> None:
+        """The shared user-data resolver is importable and returns a path."""
+        from worktrees_hives.paths import user_data_dir
+
+        assert callable(user_data_dir)
+        assert os.path.isabs(user_data_dir())
 
 
 class TestSharedImport:
