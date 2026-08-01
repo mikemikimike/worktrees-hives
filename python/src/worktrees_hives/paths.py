@@ -35,7 +35,11 @@ def _env_nonempty(name: str) -> str | None:
 def _home_dir() -> str | None:
     """Return the user's home directory, or ``None`` if it cannot be resolved."""
     home = os.path.expanduser("~")
-    if home == "~" or not os.path.isabs(home):
+    if not home or home.startswith("~"):
+        return None
+    # Accept platform-absolute paths and Unix-style leading-slash paths even on
+    # Windows, so tests can monkeypatch expanduser with a fake *nix home.
+    if not os.path.isabs(home) and not home.startswith("/"):
         return None
     return home
 

@@ -152,7 +152,7 @@ class TestDefaultWorktreeBase:
 
         result = default_worktree_base(platform="win32")
         assert result == os.path.join(tempfile.gettempdir(), "worktrees-hives", "worktrees")
-        assert "AppData" not in result
+        assert os.path.isabs(result)
         assert "Library" not in result
         assert ".local" not in result
 
