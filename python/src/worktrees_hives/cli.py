@@ -350,7 +350,10 @@ def _plan_targets(args: argparse.Namespace) -> list[tuple[str, str]]:
         from worktrees_hives.stacks import resolve_allowed_owners
 
         allowed = resolve_allowed_owners()
-        if allowed and not allow_unlisted:
+        if not allow_unlisted:
+            # Empty allowlist means deny-by-default for multi-owner discovery
+            # (AGENTS.md) — an unconfigured allowlist must reject every
+            # --owner, not just ones that fail to match a non-empty set.
             disallowed = [o for o in owners if o.casefold() not in allowed]
             if disallowed:
                 raise PolicyError(

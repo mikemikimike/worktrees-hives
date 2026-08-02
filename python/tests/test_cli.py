@@ -245,6 +245,23 @@ class TestPlan:
         monkeypatch.setenv("WH_ALLOWED_OWNERS", "someone-else")
         assert main(["plan", "--owner", OWNER]) == 2
 
+    def test_owner_flag_rejects_when_allowlist_is_empty(self, monkeypatch, capsys):
+        """Empty allowlist is deny-by-default for multi-owner discovery (AGENTS.md),
+        not "explicit --owner is itself operator intent" — --owner needs
+        --allow-unlisted regardless of whether the allowlist is unset or non-empty.
+        """
+        monkeypatch.delenv("WH_ALLOWED_OWNERS", raising=False)
+        called = False
+
+        def fake_list_repos(owner):
+            nonlocal called
+            called = True
+            return ([REPO], None, False)
+
+        monkeypatch.setattr("worktrees_hives.discover.list_repos_for_owner", fake_list_repos)
+        assert main(["plan", "--owner", OWNER]) == 2
+        assert not called, "must reject before any repo discovery happens"
+
     def test_owner_flag_allows_unlisted_with_override(self, monkeypatch, capsys):
         monkeypatch.setenv("WH_ALLOWED_OWNERS", "someone-else")
         monkeypatch.setattr(
@@ -260,7 +277,7 @@ class TestPlan:
             "worktrees_hives.discover.list_repos_for_owner",
             lambda owner: ([], "rate limited", False),
         )
-        assert main(["plan", "--owner", OWNER]) == 1
+        assert main(["plan", "--owner", OWNER, "--allow-unlisted"]) == 1
         assert "rate limited" in capsys.readouterr().err
 
 
