@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from worktrees_hives.babysit import DEFAULT_ATTRIBUTION, MAX_FIX_COMMITS_PER_CYCLE
+from worktrees_hives.discover import OwnerPolicyError
 from worktrees_hives.errors import PolicyError
 from worktrees_hives.watchlist import (
     CorruptStateError,
@@ -255,14 +257,18 @@ def _fail(command: str, code: str, message: str, *, as_json: bool, exit_code: in
 def _guard(command: str, as_json: bool, fn: Callable[[], int]) -> int:
     """Run *fn*, mapping the house exception ladder onto exit codes.
 
-    Mirrors ``cmd_add``: PolicyError → 2 (a safety/allowlist refusal),
-    everything else recoverable → 1.
+    Mirrors ``cmd_add``: PolicyError / OwnerPolicyError → 2 (a safety/allowlist
+    refusal), everything else recoverable → 1. Subprocess failures from ``gh``
+    (CalledProcessError, TimeoutExpired) are included so --json callers get an
+    error envelope instead of a traceback.
     """
     try:
         return fn()
     except PolicyError as e:
         return _fail(command, e.code, e.message, as_json=as_json, exit_code=2)
-    except (ValueError, OSError, RuntimeError) as e:
+    except OwnerPolicyError as e:
+        return _fail(command, "OWNER_NOT_ALLOWED", str(e), as_json=as_json, exit_code=2)
+    except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as e:
         return _fail(command, type(e).__name__, str(e), as_json=as_json, exit_code=1)
 
 
@@ -398,7 +404,11 @@ def cmd_plan(args: argparse.Namespace) -> int:
         ordered_all: list[dict[str, Any]] = []
         for owner, repo in _plan_targets(args):
             detector = StackDetector(owner=owner, repo=repo)
-            prs = detector.fetch_pr_infos(f"{owner}/{repo}")
+            slug = f"{owner}/{repo}"
+            # fetch_pr_infos does not resolve default_branch; without this,
+            # stack edges are wrong when the repo default is not "main".
+            detector.resolve_default_branch(slug)
+            prs = detector.fetch_pr_infos(slug)
             stacks = detector.detect_stacks(prs)
             standalone = find_standalone_prs(prs, stacks, allow_unlisted=args.allow_unlisted)
             ordered = order_prs_bottom_up(stacks, standalone, allow_unlisted=args.allow_unlisted)
@@ -434,8 +444,8 @@ def _babysit_result_to_json(result: BabysitResult) -> dict[str, Any]:
     return {
         "pr_number": result.pr_number,
         "state": result.state.value,
-        "fixes_applied": getattr(result, "fixes_applied", None),
-        "threads_replied": getattr(result, "threads_replied", None),
+        "fix_commits_used": result.fix_commits_used,
+        "threads_resolved": result.threads_resolved,
         "residual_blockers": list(result.residual_blockers),
     }
 
@@ -467,9 +477,7 @@ def cmd_babysit(args: argparse.Namespace) -> int:
 
         for result in results:
             print(f"\nPR #{result.pr_number}: {result.state.value}")
-            fixes = getattr(result, "fixes_applied", None)
-            if fixes is not None:
-                print(f"  Fixes applied: {fixes}/{args.max_fixes}")
+            print(f"  Fixes applied: {result.fix_commits_used}/{args.max_fixes}")
             for blocker in result.residual_blockers:
                 print(f"  Blocker: {blocker}")
         # Merge-ready is not merged; this tool never merges.
