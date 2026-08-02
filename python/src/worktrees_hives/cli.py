@@ -21,6 +21,8 @@ from worktrees_hives.watchlist import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from worktrees_hives.babysit import BabysitResult
     from worktrees_hives.discover import DiscoveryResult
     from worktrees_hives.stacks import PRInfo, Stack
@@ -250,7 +252,7 @@ def _fail(command: str, code: str, message: str, *, as_json: bool, exit_code: in
     return exit_code
 
 
-def _guard(command: str, as_json: bool, fn: Any) -> int:
+def _guard(command: str, as_json: bool, fn: Callable[[], int]) -> int:
     """Run *fn*, mapping the house exception ladder onto exit codes.
 
     Mirrors ``cmd_add``: PolicyError → 2 (a safety/allowlist refusal),
