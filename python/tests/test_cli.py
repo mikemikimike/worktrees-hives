@@ -174,6 +174,10 @@ class TestPlan:
     @staticmethod
     def _stub_repo(monkeypatch, prs: list[PRInfo]) -> None:
         monkeypatch.setattr(
+            "worktrees_hives.stacks.StackDetector.resolve_default_branch",
+            lambda self, repo_path=None: self.default_branch,
+        )
+        monkeypatch.setattr(
             "worktrees_hives.stacks.StackDetector.fetch_pr_infos",
             lambda self, repo_path=None: prs,
         )
@@ -236,6 +240,45 @@ class TestPlan:
             ]
         )
         assert len(_envelope(capsys)["data"]["ordered"]) == 1
+
+    def test_owner_flag_rejects_unlisted_owner(self, monkeypatch):
+        monkeypatch.setenv("WH_ALLOWED_OWNERS", "someone-else")
+        assert main(["plan", "--owner", OWNER]) == 2
+
+    def test_owner_flag_rejects_when_allowlist_is_empty(self, monkeypatch, capsys):
+        """Empty allowlist is deny-by-default for multi-owner discovery (AGENTS.md),
+        not "explicit --owner is itself operator intent" — --owner needs
+        --allow-unlisted regardless of whether the allowlist is unset or non-empty.
+        """
+        monkeypatch.delenv("WH_ALLOWED_OWNERS", raising=False)
+        called = False
+
+        def fake_list_repos(owner):
+            nonlocal called
+            called = True
+            return ([REPO], None, False)
+
+        monkeypatch.setattr("worktrees_hives.discover.list_repos_for_owner", fake_list_repos)
+        assert main(["plan", "--owner", OWNER]) == 2
+        assert not called, "must reject before any repo discovery happens"
+
+    def test_owner_flag_allows_unlisted_with_override(self, monkeypatch, capsys):
+        monkeypatch.setenv("WH_ALLOWED_OWNERS", "someone-else")
+        monkeypatch.setattr(
+            "worktrees_hives.discover.list_repos_for_owner",
+            lambda owner: ([REPO], None, False),
+        )
+        self._stub_repo(monkeypatch, [_pr(1, "fix/a", "main")])
+        assert main(["plan", "--owner", OWNER, "--allow-unlisted"]) == 0
+
+    def test_owner_listing_error_is_a_recoverable_failure(self, monkeypatch, capsys):
+        monkeypatch.delenv("WH_ALLOWED_OWNERS", raising=False)
+        monkeypatch.setattr(
+            "worktrees_hives.discover.list_repos_for_owner",
+            lambda owner: ([], "rate limited", False),
+        )
+        assert main(["plan", "--owner", OWNER, "--allow-unlisted"]) == 1
+        assert "rate limited" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +377,48 @@ class TestBabysit:
     def test_non_integer_pr_number_is_rejected(self):
         with pytest.raises(SystemExit):
             main(["babysit", "--owner", OWNER, "--repo", REPO, "not-a-number"])
+
+    def test_max_fixes_above_ceiling_exits_2(self, monkeypatch, capsys):
+        from worktrees_hives.babysit import MAX_FIX_COMMITS_PER_CYCLE
+
+        monkeypatch.setattr("worktrees_hives.babysit.babysit_multiple", lambda **kw: [])
+        assert (
+            main(
+                [
+                    "babysit",
+                    "--owner",
+                    OWNER,
+                    "--repo",
+                    REPO,
+                    "1",
+                    "--max-fixes",
+                    str(MAX_FIX_COMMITS_PER_CYCLE + 1),
+                ]
+            )
+            == 2
+        )
+        assert "safety cap" in capsys.readouterr().err
+
+    def test_json_envelope_includes_check_and_thread_counts(self, monkeypatch, capsys):
+        results = [
+            BabysitResult(
+                pr_number=4,
+                state=BabysitPRState.UNKNOWN,
+                threads_resolved=2,
+                threads_remaining=1,
+                checks_passed=3,
+                checks_failed=1,
+                checks_pending=0,
+                residual_blockers=["conflict"],
+            )
+        ]
+        monkeypatch.setattr("worktrees_hives.babysit.babysit_multiple", lambda **kw: results)
+        assert main(["--json", "babysit", "--owner", OWNER, "--repo", REPO, "4"]) == 0
+        entry = _envelope(capsys)["data"]["results"][0]
+        assert entry["threads_remaining"] == 1
+        assert entry["checks_passed"] == 3
+        assert entry["checks_failed"] == 1
+        assert entry["checks_pending"] == 0
 
 
 # ---------------------------------------------------------------------------

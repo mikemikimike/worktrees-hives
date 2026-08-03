@@ -591,6 +591,11 @@ class StackDetector:
 
         Includes closed and merged PRs so a child is not misclassified as
         standalone when its parent branch has already landed.
+
+        Does not resolve ``self.default_branch``. Call
+        :meth:`resolve_default_branch` first if the result feeds
+        :meth:`detect_stacks`, or stack edges are wrong for repos whose
+        default branch is not ``"main"``.
         """
         return self.parse_pr_infos(self._fetch_all_prs_from_gh(repo_path))
 

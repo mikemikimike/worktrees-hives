@@ -344,16 +344,40 @@ def _plan_targets(args: argparse.Namespace) -> list[tuple[str, str]]:
         targets.append(_split_repo_slug(slug))
 
     owners = getattr(args, "owner", None) or []
+    allow_unlisted = getattr(args, "allow_unlisted", False)
     if owners:
         from worktrees_hives.discover import list_repos_for_owner
+        from worktrees_hives.stacks import resolve_allowed_owners
 
+        allowed = resolve_allowed_owners()
+        if not allow_unlisted:
+            # Empty allowlist means deny-by-default for multi-owner discovery
+            # (AGENTS.md) — an unconfigured allowlist must reject every
+            # --owner, not just ones that fail to match a non-empty set.
+            disallowed = [o for o in owners if o.casefold() not in allowed]
+            if disallowed:
+                raise PolicyError(
+                    "OWNER_NOT_ALLOWED",
+                    f"--owner not in allowlist {sorted(allowed)}: {disallowed}. "
+                    "Pass --allow-unlisted for an explicit override.",
+                )
+
+        incomplete: list[str] = []
         for owner in owners:
             repos, error, truncated = list_repos_for_owner(owner)
             if error:
                 print(f"WARNING: {owner}: {error}", file=sys.stderr)
+                incomplete.append(f"{owner}: {error}")
             if truncated:
                 print(f"WARNING: {owner}: repo list truncated", file=sys.stderr)
+                incomplete.append(f"{owner}: repo list truncated")
             targets.extend((owner, r) for r in repos)
+
+        if incomplete:
+            # A partial owner listing that still exits 0 silently omits
+            # repositories from the plan — treat it as a recoverable failure
+            # instead of continuing with an incomplete target set.
+            raise ValueError(f"incomplete repository listing: {'; '.join(incomplete)}")
 
     if not targets:
         raise ValueError("no targets: pass --repo owner/repo and/or --owner")
@@ -446,6 +470,10 @@ def _babysit_result_to_json(result: BabysitResult) -> dict[str, Any]:
         "state": result.state.value,
         "fix_commits_used": result.fix_commits_used,
         "threads_resolved": result.threads_resolved,
+        "threads_remaining": result.threads_remaining,
+        "checks_passed": result.checks_passed,
+        "checks_failed": result.checks_failed,
+        "checks_pending": result.checks_pending,
         "residual_blockers": list(result.residual_blockers),
     }
 
@@ -456,6 +484,13 @@ def cmd_babysit(args: argparse.Namespace) -> int:
 
     def run() -> int:
         from worktrees_hives.babysit import babysit_multiple
+
+        if not 0 <= args.max_fixes <= MAX_FIX_COMMITS_PER_CYCLE:
+            raise PolicyError(
+                "MAX_FIXES_CEILING",
+                f"--max-fixes {args.max_fixes} is outside the allowed range "
+                f"0-{MAX_FIX_COMMITS_PER_CYCLE} (AGENTS.md safety cap).",
+            )
 
         results = babysit_multiple(
             owner=args.owner,
@@ -478,6 +513,14 @@ def cmd_babysit(args: argparse.Namespace) -> int:
         for result in results:
             print(f"\nPR #{result.pr_number}: {result.state.value}")
             print(f"  Fixes applied: {result.fix_commits_used}/{args.max_fixes}")
+            print(
+                f"  Threads resolved: {result.threads_resolved}, "
+                f"remaining: {result.threads_remaining}"
+            )
+            print(
+                f"  Checks: {result.checks_passed} passed, {result.checks_failed} failed, "
+                f"{result.checks_pending} pending"
+            )
             for blocker in result.residual_blockers:
                 print(f"  Blocker: {blocker}")
         # Merge-ready is not merged; this tool never merges.
