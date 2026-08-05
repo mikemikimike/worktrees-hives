@@ -483,7 +483,7 @@ def cmd_babysit(args: argparse.Namespace) -> int:
     as_json = getattr(args, "json", False)
 
     def run() -> int:
-        from worktrees_hives.babysit import babysit_multiple
+        from worktrees_hives.babysit import assert_owner_allowed, babysit_multiple
 
         if not 0 <= args.max_fixes <= MAX_FIX_COMMITS_PER_CYCLE:
             raise PolicyError(
@@ -491,6 +491,15 @@ def cmd_babysit(args: argparse.Namespace) -> int:
                 f"--max-fixes {args.max_fixes} is outside the allowed range "
                 f"0-{MAX_FIX_COMMITS_PER_CYCLE} (AGENTS.md safety cap).",
             )
+
+        # babysit_multiple swallows per-PR exceptions into PRState.UNKNOWN and
+        # always returns a result list, so an empty/disallowed allowlist would
+        # otherwise look like a successful exit-0 cycle that did no work.
+        # Fail closed here with exit 2 before any GitHub mutations.
+        try:
+            assert_owner_allowed(args.owner)
+        except ValueError as e:
+            raise PolicyError("OWNER_NOT_ALLOWED", str(e)) from e
 
         results = babysit_multiple(
             owner=args.owner,
