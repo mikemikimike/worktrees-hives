@@ -337,6 +337,27 @@ def cmd_discover(args: argparse.Namespace) -> int:
     return _guard("discover", as_json, run)
 
 
+def _assert_owners_allowed(
+    allowed: set[str],
+    owners: list[str],
+    *,
+    flag: str,
+) -> None:
+    """Raise OWNER_NOT_ALLOWED when any *owners* entry is outside *allowed*.
+
+    *allowed* is casefolded (as returned by ``resolve_allowed_owners``).
+    *flag* is the CLI switch label used in the error message (``--repo`` /
+    ``--owner``).
+    """
+    disallowed = [o for o in owners if o.casefold() not in allowed]
+    if disallowed:
+        raise PolicyError(
+            "OWNER_NOT_ALLOWED",
+            f"{flag} not in allowlist {sorted(allowed)}: {disallowed}. "
+            "Pass --allow-unlisted for an explicit override.",
+        )
+
+
 def _plan_targets(args: argparse.Namespace) -> list[tuple[str, str]]:
     """Resolve --repo / --owner into a deduped list of (owner, repo)."""
     from worktrees_hives.stacks import resolve_allowed_owners
@@ -353,13 +374,7 @@ def _plan_targets(args: argparse.Namespace) -> list[tuple[str, str]]:
     # owners unless the operator opts out with --allow-unlisted.
     if targets and not allow_unlisted:
         repo_owners = sorted({o for o, _ in targets}, key=str.casefold)
-        disallowed_repo = [o for o in repo_owners if o.casefold() not in allowed]
-        if disallowed_repo:
-            raise PolicyError(
-                "OWNER_NOT_ALLOWED",
-                f"--repo owner(s) not in allowlist {sorted(allowed)}: {disallowed_repo}. "
-                "Pass --allow-unlisted for an explicit override.",
-            )
+        _assert_owners_allowed(allowed, repo_owners, flag="--repo")
 
     if owners:
         from worktrees_hives.discover import list_repos_for_owner
@@ -379,13 +394,7 @@ def _plan_targets(args: argparse.Namespace) -> list[tuple[str, str]]:
             # Empty allowlist means deny-by-default for multi-owner discovery
             # (AGENTS.md) — an unconfigured allowlist must reject every
             # --owner, not just ones that fail to match a non-empty set.
-            disallowed = [o for o in owners if o.casefold() not in allowed]
-            if disallowed:
-                raise PolicyError(
-                    "OWNER_NOT_ALLOWED",
-                    f"--owner not in allowlist {sorted(allowed)}: {disallowed}. "
-                    "Pass --allow-unlisted for an explicit override.",
-                )
+            _assert_owners_allowed(allowed, owners, flag="--owner")
 
         incomplete: list[str] = []
         for owner in owners:
