@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from worktrees_hives.babysit import DEFAULT_ATTRIBUTION, MAX_FIX_COMMITS_PER_CYCLE
+from worktrees_hives.discover import OwnerPolicyError
 from worktrees_hives.errors import PolicyError
 from worktrees_hives.watchlist import (
     CorruptStateError,
@@ -18,6 +21,13 @@ from worktrees_hives.watchlist import (
     JobStatus,
     Watchlist,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from worktrees_hives.babysit import BabysitResult
+    from worktrees_hives.discover import DiscoveryResult
+    from worktrees_hives.stacks import PRInfo, Stack
 
 
 def _print_job(job: JobState) -> None:
@@ -227,6 +237,353 @@ def cmd_check(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Orchestration commands (discover / plan / babysit)
+# ---------------------------------------------------------------------------
+
+
+def _fail(command: str, code: str, message: str, *, as_json: bool, exit_code: int) -> int:
+    """Report a failure on stderr and, under --json, as a v1 error envelope."""
+    print(f"Error: {message}", file=sys.stderr)
+    if as_json:
+        print(
+            json.dumps(
+                _v1_envelope(command, {}, ok=False, error={"code": code, "message": message})
+            )
+        )
+    return exit_code
+
+
+def _guard(command: str, as_json: bool, fn: Callable[[], int]) -> int:
+    """Run *fn*, mapping the house exception ladder onto exit codes.
+
+    Mirrors ``cmd_add``: PolicyError / OwnerPolicyError → 2 (a safety/allowlist
+    refusal), everything else recoverable → 1. Subprocess failures from ``gh``
+    (CalledProcessError, TimeoutExpired) are included so --json callers get an
+    error envelope instead of a traceback.
+    """
+    try:
+        return fn()
+    except PolicyError as e:
+        return _fail(command, e.code, e.message, as_json=as_json, exit_code=2)
+    except OwnerPolicyError as e:
+        return _fail(command, "OWNER_NOT_ALLOWED", str(e), as_json=as_json, exit_code=2)
+    except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as e:
+        return _fail(command, type(e).__name__, str(e), as_json=as_json, exit_code=1)
+
+
+def _owners_arg(args: argparse.Namespace) -> list[str] | None:
+    """Repeatable --owner, or None to fall back to WH_ALLOWED_OWNERS."""
+    owners = getattr(args, "owner", None)
+    return list(owners) if owners else None
+
+
+def _split_repo_slug(slug: str) -> tuple[str, str]:
+    """Split ``owner/repo``, rejecting anything else."""
+    owner, sep, repo = slug.partition("/")
+    if not sep or not owner or not repo or "/" in repo:
+        raise ValueError(f"--repo expects owner/repo, got {slug!r}")
+    return owner, repo
+
+
+def _print_discovery(result: DiscoveryResult) -> None:
+    """Human view: grouped by owner/repo, with errors and truncation surfaced."""
+    by_repo: dict[str, list[Any]] = {}
+    for issue in result.issues:
+        by_repo.setdefault(f"{issue.owner}/{issue.repo}", []).append(issue)
+
+    for slug in sorted(by_repo):
+        print(f"\n{slug}:")
+        for issue in sorted(by_repo[slug], key=lambda i: i.number):
+            kind = "PR " if issue.is_pr else "issue"
+            labels = f"  [{', '.join(issue.labels)}]" if issue.labels else ""
+            print(f"  {kind} #{issue.number}  {issue.title}{labels}")
+
+    print(
+        f"\n{len(result.issues)} item(s) across {len(result.owners_scanned)} owner(s): "
+        f"{', '.join(result.owners_scanned) or 'none'}"
+    )
+    # A silently truncated scan is the dangerous failure mode: it looks like a
+    # complete picture but hides work.
+    if result.truncated:
+        print("WARNING: results truncated — more items exist than were fetched", file=sys.stderr)
+    for err in result.errors:
+        print(f"WARNING: {err}", file=sys.stderr)
+
+
+def cmd_discover(args: argparse.Namespace) -> int:
+    """Discover open issues/PRs across allowed owners (read-only)."""
+    as_json = getattr(args, "json", False)
+
+    def run() -> int:
+        from worktrees_hives import discover as discover_mod
+
+        result = discover_mod.discover_all(
+            owners=_owners_arg(args),
+            kind=args.kind,
+            allow_non_default_owners=args.allow_non_default_owners,
+            check_auth=not args.no_check_auth,
+        )
+        if as_json:
+            # format_for_orchestrator already emits the agreed shape — do not
+            # build a second serializer that can drift from it.
+            print(
+                json.dumps(_v1_envelope("discover", discover_mod.format_for_orchestrator(result)))
+            )
+        else:
+            _print_discovery(result)
+        return 0
+
+    return _guard("discover", as_json, run)
+
+
+def _assert_owners_allowed(
+    allowed: set[str],
+    owners: list[str],
+    *,
+    flag: str,
+) -> None:
+    """Raise OWNER_NOT_ALLOWED when any *owners* entry is outside *allowed*.
+
+    *allowed* is casefolded (as returned by ``resolve_allowed_owners``).
+    *flag* is the CLI switch label used in the error message (``--repo`` /
+    ``--owner``).
+    """
+    disallowed = [o for o in owners if o.casefold() not in allowed]
+    if disallowed:
+        raise PolicyError(
+            "OWNER_NOT_ALLOWED",
+            f"{flag} not in allowlist {sorted(allowed)}: {disallowed}. "
+            "Pass --allow-unlisted for an explicit override.",
+        )
+
+
+def _plan_targets(args: argparse.Namespace) -> list[tuple[str, str]]:
+    """Resolve --repo / --owner into a deduped list of (owner, repo)."""
+    from worktrees_hives.stacks import resolve_allowed_owners
+
+    targets: list[tuple[str, str]] = []
+    for slug in getattr(args, "repo", None) or []:
+        targets.append(_split_repo_slug(slug))
+
+    owners = getattr(args, "owner", None) or []
+    allow_unlisted = getattr(args, "allow_unlisted", False)
+    allowed = resolve_allowed_owners()
+
+    # Explicit --repo is still an owner-scoped GitHub scan: reject unlisted
+    # owners unless the operator opts out with --allow-unlisted.
+    if targets and not allow_unlisted:
+        repo_owners = sorted({o for o, _ in targets}, key=str.casefold)
+        _assert_owners_allowed(allowed, repo_owners, flag="--repo")
+
+    if owners:
+        from worktrees_hives.discover import list_repos_for_owner
+
+        # Dedup before network expansion so repeated --owner flags do not
+        # re-list the same owner's repositories.
+        seen_owners: set[str] = set()
+        unique_owners: list[str] = []
+        for owner in owners:
+            key = owner.casefold()
+            if key not in seen_owners:
+                seen_owners.add(key)
+                unique_owners.append(owner)
+        owners = unique_owners
+
+        if not allow_unlisted:
+            # Empty allowlist means deny-by-default for multi-owner discovery
+            # (AGENTS.md) — an unconfigured allowlist must reject every
+            # --owner, not just ones that fail to match a non-empty set.
+            _assert_owners_allowed(allowed, owners, flag="--owner")
+
+        incomplete: list[str] = []
+        for owner in owners:
+            repos, error, truncated = list_repos_for_owner(owner)
+            if error:
+                print(f"WARNING: {owner}: {error}", file=sys.stderr)
+                incomplete.append(f"{owner}: {error}")
+            if truncated:
+                print(f"WARNING: {owner}: repo list truncated", file=sys.stderr)
+                incomplete.append(f"{owner}: repo list truncated")
+            targets.extend((owner, r) for r in repos)
+
+        if incomplete:
+            # A partial owner listing that still exits 0 silently omits
+            # repositories from the plan — treat it as a recoverable failure
+            # instead of continuing with an incomplete target set.
+            raise ValueError(f"incomplete repository listing: {'; '.join(incomplete)}")
+
+    if not targets:
+        raise ValueError("no targets: pass --repo owner/repo and/or --owner")
+
+    seen: set[tuple[str, str]] = set()
+    deduped = []
+    for target in targets:
+        key = (target[0].casefold(), target[1].casefold())
+        if key not in seen:
+            seen.add(key)
+            deduped.append(target)
+    return deduped
+
+
+def _pr_to_json(pr: PRInfo, stack_id: str | None, position: int | None) -> dict[str, Any]:
+    return {
+        "owner": pr.owner,
+        "repo": pr.repo,
+        "number": pr.number,
+        "head_ref": pr.head_ref,
+        "base_ref": pr.base_ref,
+        "state": pr.state.value,
+        "stack_id": stack_id,
+        "stack_position": position,
+    }
+
+
+def _stack_index(stacks: list[Stack]) -> dict[str, tuple[str | None, int | None]]:
+    """Map PRInfo.key → (stack_id, stack_position) for annotating the order."""
+    index: dict[str, tuple[str | None, int | None]] = {}
+    for stack in stacks:
+        for member in stack.members:
+            index[member.pr.key] = (stack.stack_id, member.stack_position)
+    return index
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    """Emit the bottom-up processing order for open PRs (read-only)."""
+    as_json = getattr(args, "json", False)
+
+    def run() -> int:
+        from worktrees_hives.stacks import (
+            StackDetector,
+            find_standalone_prs,
+            order_prs_bottom_up,
+        )
+
+        ordered_all: list[dict[str, Any]] = []
+        for owner, repo in _plan_targets(args):
+            detector = StackDetector(owner=owner, repo=repo)
+            slug = f"{owner}/{repo}"
+            # fetch_pr_infos does not resolve default_branch; without this,
+            # stack edges are wrong when the repo default is not "main".
+            detector.resolve_default_branch(slug)
+            prs = detector.fetch_pr_infos(slug)
+            stacks = detector.detect_stacks(prs)
+            standalone = find_standalone_prs(prs, stacks, allow_unlisted=args.allow_unlisted)
+            ordered = order_prs_bottom_up(stacks, standalone, allow_unlisted=args.allow_unlisted)
+            index = _stack_index(stacks)
+            for pr in ordered:
+                stack_id, position = index.get(pr.key, (None, None))
+                ordered_all.append(_pr_to_json(pr, stack_id, position))
+
+        if as_json:
+            print(json.dumps(_v1_envelope("plan", {"ordered": ordered_all})))
+            return 0
+
+        if not ordered_all:
+            print("No PRs to process")
+            return 0
+        print("Processing order (bottom of stack first):")
+        for i, entry in enumerate(ordered_all, start=1):
+            where = (
+                f"  stack {entry['stack_id']} pos {entry['stack_position']}"
+                if entry["stack_id"]
+                else "  standalone"
+            )
+            print(
+                f"  {i:>3}. {entry['owner']}/{entry['repo']}#{entry['number']}"
+                f"  {entry['head_ref']} → {entry['base_ref']}{where}"
+            )
+        return 0
+
+    return _guard("plan", as_json, run)
+
+
+def _babysit_result_to_json(result: BabysitResult) -> dict[str, Any]:
+    return {
+        "pr_number": result.pr_number,
+        "state": result.state.value,
+        "fix_commits_used": result.fix_commits_used,
+        "threads_resolved": result.threads_resolved,
+        "threads_remaining": result.threads_remaining,
+        "checks_passed": result.checks_passed,
+        "checks_failed": result.checks_failed,
+        "checks_pending": result.checks_pending,
+        "residual_blockers": list(result.residual_blockers),
+    }
+
+
+def cmd_babysit(args: argparse.Namespace) -> int:
+    """Run a babysit cycle over PRs in one repo. Never merges."""
+    as_json = getattr(args, "json", False)
+
+    def run() -> int:
+        from worktrees_hives.babysit import assert_owner_allowed, babysit_multiple
+
+        if not 0 <= args.max_fixes <= MAX_FIX_COMMITS_PER_CYCLE:
+            raise PolicyError(
+                "MAX_FIXES_CEILING",
+                f"--max-fixes {args.max_fixes} is outside the allowed range "
+                f"0-{MAX_FIX_COMMITS_PER_CYCLE} (AGENTS.md safety cap).",
+            )
+
+        pr_numbers = list(args.pr_numbers)
+        # argparse type=int accepts 0/negatives; each entry is a separate cycle
+        # with a fresh fix budget, so duplicates would also re-spend the cap.
+        if any(n <= 0 for n in pr_numbers):
+            raise ValueError(f"PR numbers must be positive integers, got {pr_numbers}")
+        if len(pr_numbers) != len(set(pr_numbers)):
+            raise ValueError(
+                f"duplicate PR numbers are not allowed (each PR is one cycle "
+                f"with its own fix budget): {pr_numbers}"
+            )
+
+        # babysit_multiple swallows per-PR exceptions into PRState.UNKNOWN and
+        # always returns a result list, so an empty/disallowed allowlist would
+        # otherwise look like a successful exit-0 cycle that did no work.
+        # Fail closed here with exit 2 before any GitHub mutations.
+        try:
+            assert_owner_allowed(args.owner)
+        except ValueError as e:
+            raise PolicyError("OWNER_NOT_ALLOWED", str(e)) from e
+
+        results = babysit_multiple(
+            owner=args.owner,
+            repo=args.repo,
+            pr_numbers=pr_numbers,
+            attribution=args.attribution,
+            max_fixes=args.max_fixes,
+        )
+        if as_json:
+            print(
+                json.dumps(
+                    _v1_envelope(
+                        "babysit",
+                        {"results": [_babysit_result_to_json(r) for r in results]},
+                    )
+                )
+            )
+            return 0
+
+        for result in results:
+            print(f"\nPR #{result.pr_number}: {result.state.value}")
+            print(f"  Fixes applied: {result.fix_commits_used}/{args.max_fixes}")
+            print(
+                f"  Threads resolved: {result.threads_resolved}, "
+                f"remaining: {result.threads_remaining}"
+            )
+            print(
+                f"  Checks: {result.checks_passed} passed, {result.checks_failed} failed, "
+                f"{result.checks_pending} pending"
+            )
+            for blocker in result.residual_blockers:
+                print(f"  Blocker: {blocker}")
+        # Merge-ready is not merged; this tool never merges.
+        print("\nNo PR was merged — merging remains a human decision.")
+        return 0
+
+    return _guard("babysit", as_json, run)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Main CLI entry point (worktrees-hives / wh-orch)."""
     parser = argparse.ArgumentParser(
@@ -283,22 +640,107 @@ def main(argv: list[str] | None = None) -> int:
     check_p.add_argument("--owner", help="Filter by owner")
     check_p.add_argument("--repo", help="Filter by repo")
 
+    # discover
+    disc_p = sub.add_parser(
+        "discover",
+        help="Discover open issues/PRs across allowed owners (read-only)",
+    )
+    disc_p.add_argument(
+        "--owner",
+        action="append",
+        metavar="OWNER",
+        help="Owner to scan; repeatable. Defaults to WH_ALLOWED_OWNERS.",
+    )
+    disc_p.add_argument(
+        "--kind",
+        choices=["all", "issues", "prs"],
+        default="all",
+        help="What to discover (default: all)",
+    )
+    disc_p.add_argument(
+        "--allow-non-default-owners",
+        action="store_true",
+        help="Scan owners outside the WH_ALLOWED_OWNERS allowlist",
+    )
+    disc_p.add_argument(
+        "--no-check-auth",
+        action="store_true",
+        help="Skip the `gh auth status` pre-flight check",
+    )
+
+    # plan
+    plan_p = sub.add_parser(
+        "plan",
+        help="Show the bottom-up PR processing order (read-only)",
+    )
+    plan_p.add_argument(
+        "--repo",
+        action="append",
+        metavar="OWNER/REPO",
+        help="Repository to plan; repeatable",
+    )
+    plan_p.add_argument(
+        "--owner",
+        action="append",
+        metavar="OWNER",
+        help="Plan every repo for this owner; repeatable",
+    )
+    plan_p.add_argument(
+        "--allow-unlisted",
+        action="store_true",
+        help="Skip owner allowlist filtering",
+    )
+
+    # babysit
+    baby_p = sub.add_parser(
+        "babysit",
+        help="Run a babysit cycle over PRs in one repo (never merges)",
+    )
+    baby_p.add_argument("--owner", required=True, help="Repository owner")
+    baby_p.add_argument("--repo", required=True, help="Repository name")
+    baby_p.add_argument(
+        "pr_numbers",
+        nargs="+",
+        type=int,
+        metavar="PR",
+        help=(
+            "PR numbers in bottom-up stack order. Ordering is not computed here: "
+            "take it from `worktrees-hives plan`. Out-of-order input defers "
+            "children behind a blocked parent incorrectly."
+        ),
+    )
+    baby_p.add_argument(
+        "--max-fixes",
+        type=int,
+        default=MAX_FIX_COMMITS_PER_CYCLE,
+        help=(f"Max code-fix commits per PR per cycle (default: {MAX_FIX_COMMITS_PER_CYCLE})"),
+    )
+    baby_p.add_argument(
+        "--attribution",
+        default=DEFAULT_ATTRIBUTION,
+        help=f"Attribution prefixed to review replies (default: {DEFAULT_ATTRIBUTION!r})",
+    )
+
     args = parser.parse_args(argv)
 
-    commands = {
-        "watchlist": {
+    if args.command == "watchlist":
+        watchlist_handlers = {
             "add": cmd_add,
             "remove": cmd_remove,
             "list": cmd_list,
             "check": cmd_check,
         }
+        return watchlist_handlers[args.wl_command](args)
+
+    handlers = {
+        "discover": cmd_discover,
+        "plan": cmd_plan,
+        "babysit": cmd_babysit,
     }
-
-    if args.command == "watchlist":
-        handler = commands["watchlist"][args.wl_command]
-        return handler(args)
-
-    return 1
+    handler = handlers.get(args.command)
+    if handler is None:
+        parser.error(f"unknown command: {args.command}")
+    return handler(args)
 
 
 if __name__ == "__main__":

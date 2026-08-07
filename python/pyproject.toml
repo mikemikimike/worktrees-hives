@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "worktrees-hives"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python orchestrator for worktrees-hives: issue-to-PR and PR-babysit with isolated subagents"
 readme = "../README.md"
 license = "Apache-2.0"

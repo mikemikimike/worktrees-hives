@@ -531,8 +531,17 @@ class StackDetector:
         """
         if default_branch:
             self.default_branch = default_branch
+        return self.detect_stacks(self.parse_pr_infos(pr_data))
 
-        prs = []
+    def parse_pr_infos(self, pr_data: list[dict[str, Any]]) -> list[PRInfo]:
+        """Parse ``gh``-shaped PR dicts into :class:`PRInfo`.
+
+        Malformed entries are skipped rather than raising: a single bad record
+        from ``gh`` must not abort scheduling for the whole repository.
+        Callers that need both stacks and standalone PRs (``find_standalone_prs``
+        takes the full PR list) use this to avoid re-implementing the mapping.
+        """
+        prs: list[PRInfo] = []
         for data in pr_data:
             if not isinstance(data, dict):
                 continue
@@ -563,19 +572,32 @@ class StackDetector:
             if not isinstance(head_repo, str):
                 head_repo = None
             mergeable = data.get("mergeable")
-            pr = PRInfo(
-                number=number,
-                head_ref=head_ref,
-                base_ref=base_ref,
-                repo=pr_repo,
-                owner=pr_owner,
-                state=_parse_github_pr_state(raw_state, merged_at, mergeable),
-                head_owner=head_owner,
-                head_repo=head_repo,
+            prs.append(
+                PRInfo(
+                    number=number,
+                    head_ref=head_ref,
+                    base_ref=base_ref,
+                    repo=pr_repo,
+                    owner=pr_owner,
+                    state=_parse_github_pr_state(raw_state, merged_at, mergeable),
+                    head_owner=head_owner,
+                    head_repo=head_repo,
+                )
             )
-            prs.append(pr)
+        return prs
 
-        return self.detect_stacks(prs)
+    def fetch_pr_infos(self, repo_path: str | None = None) -> list[PRInfo]:
+        """Fetch every PR for a repo via ``gh`` and return them as :class:`PRInfo`.
+
+        Includes closed and merged PRs so a child is not misclassified as
+        standalone when its parent branch has already landed.
+
+        Does not resolve ``self.default_branch``. Call
+        :meth:`resolve_default_branch` first if the result feeds
+        :meth:`detect_stacks`, or stack edges are wrong for repos whose
+        default branch is not ``"main"``.
+        """
+        return self.parse_pr_infos(self._fetch_all_prs_from_gh(repo_path))
 
     def _resolve_repo_slug(self, repo_path: str | None) -> str:
         """Return owner/repo slug for gh API calls.
@@ -723,23 +745,12 @@ class StackDetector:
 
         return all_prs
 
-    def detect_stacks_from_gh_cli(
-        self,
-        repo_path: str | None = None,
-    ) -> list[Stack]:
-        """Detect stacks using gh CLI.
+    def resolve_default_branch(self, repo_path: str | None = None) -> str:
+        """Resolve the repo default branch via ``gh`` and cache it on self.
 
-        Parameters
-        ----------
-        repo_path:
-            Path to git repo or ``owner/repo`` slug. If None, uses current
-            directory.
-
-        Returns
-        -------
-        List of Stack objects.
+        On failure, leaves ``self.default_branch`` unchanged (constructor
+        default is ``"main"``) and returns that value.
         """
-        # Get default branch
         cmd = [self._gh_bin, "repo", "view", "--json", "defaultBranchRef"]
         cwd = None
         if repo_path:
@@ -758,16 +769,38 @@ class StackDetector:
                 cwd=cwd,
             )
             repo_data = json.loads(result.stdout)
-            self.default_branch = repo_data["defaultBranchRef"]["name"]
+            name = repo_data["defaultBranchRef"]["name"]
+            if isinstance(name, str) and name:
+                self.default_branch = name
         except (
             subprocess.CalledProcessError,
             subprocess.TimeoutExpired,
+            FileNotFoundError,
+            OSError,
             KeyError,
             TypeError,
             json.JSONDecodeError,
         ):
             pass  # Use default
+        return self.default_branch
 
+    def detect_stacks_from_gh_cli(
+        self,
+        repo_path: str | None = None,
+    ) -> list[Stack]:
+        """Detect stacks using gh CLI.
+
+        Parameters
+        ----------
+        repo_path:
+            Path to git repo or ``owner/repo`` slug. If None, uses current
+            directory.
+
+        Returns
+        -------
+        List of Stack objects.
+        """
+        self.resolve_default_branch(repo_path)
         pr_data = self._fetch_all_prs_from_gh(repo_path)
         return self.detect_stacks_from_github(pr_data)
 

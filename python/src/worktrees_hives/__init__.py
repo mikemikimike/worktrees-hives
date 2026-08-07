@@ -4,7 +4,7 @@ Orchestration policy only. Worktrees, path sandbox, branch checks, and safe
 ``git``/``gh`` execution belong to the Rust ``wh`` binary — use :class:`WhClient`.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from worktrees_hives.attribution import (
     AttributionConfig,
