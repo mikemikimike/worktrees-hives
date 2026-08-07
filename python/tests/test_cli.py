@@ -437,9 +437,7 @@ class TestBabysit:
 
         monkeypatch.setenv("WH_ALLOWED_OWNERS", "someone-else")
         monkeypatch.setattr("worktrees_hives.babysit.babysit_multiple", fake)
-        assert (
-            main(["--json", "babysit", "--owner", OWNER, "--repo", REPO, "1"]) == 2
-        )
+        assert main(["--json", "babysit", "--owner", OWNER, "--repo", REPO, "1"]) == 2
         env = _envelope(capsys)
         assert env["ok"] is False
         assert env["command"] == "babysit"
