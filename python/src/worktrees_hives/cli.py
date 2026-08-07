@@ -339,17 +339,42 @@ def cmd_discover(args: argparse.Namespace) -> int:
 
 def _plan_targets(args: argparse.Namespace) -> list[tuple[str, str]]:
     """Resolve --repo / --owner into a deduped list of (owner, repo)."""
+    from worktrees_hives.stacks import resolve_allowed_owners
+
     targets: list[tuple[str, str]] = []
     for slug in getattr(args, "repo", None) or []:
         targets.append(_split_repo_slug(slug))
 
     owners = getattr(args, "owner", None) or []
     allow_unlisted = getattr(args, "allow_unlisted", False)
+    allowed = resolve_allowed_owners()
+
+    # Explicit --repo is still an owner-scoped GitHub scan: reject unlisted
+    # owners unless the operator opts out with --allow-unlisted.
+    if targets and not allow_unlisted:
+        repo_owners = sorted({o for o, _ in targets}, key=str.casefold)
+        disallowed_repo = [o for o in repo_owners if o.casefold() not in allowed]
+        if disallowed_repo:
+            raise PolicyError(
+                "OWNER_NOT_ALLOWED",
+                f"--repo owner(s) not in allowlist {sorted(allowed)}: {disallowed_repo}. "
+                "Pass --allow-unlisted for an explicit override.",
+            )
+
     if owners:
         from worktrees_hives.discover import list_repos_for_owner
-        from worktrees_hives.stacks import resolve_allowed_owners
 
-        allowed = resolve_allowed_owners()
+        # Dedup before network expansion so repeated --owner flags do not
+        # re-list the same owner's repositories.
+        seen_owners: set[str] = set()
+        unique_owners: list[str] = []
+        for owner in owners:
+            key = owner.casefold()
+            if key not in seen_owners:
+                seen_owners.add(key)
+                unique_owners.append(owner)
+        owners = unique_owners
+
         if not allow_unlisted:
             # Empty allowlist means deny-by-default for multi-owner discovery
             # (AGENTS.md) — an unconfigured allowlist must reject every
@@ -492,6 +517,17 @@ def cmd_babysit(args: argparse.Namespace) -> int:
                 f"0-{MAX_FIX_COMMITS_PER_CYCLE} (AGENTS.md safety cap).",
             )
 
+        pr_numbers = list(args.pr_numbers)
+        # argparse type=int accepts 0/negatives; each entry is a separate cycle
+        # with a fresh fix budget, so duplicates would also re-spend the cap.
+        if any(n <= 0 for n in pr_numbers):
+            raise ValueError(f"PR numbers must be positive integers, got {pr_numbers}")
+        if len(pr_numbers) != len(set(pr_numbers)):
+            raise ValueError(
+                f"duplicate PR numbers are not allowed (each PR is one cycle "
+                f"with its own fix budget): {pr_numbers}"
+            )
+
         # babysit_multiple swallows per-PR exceptions into PRState.UNKNOWN and
         # always returns a result list, so an empty/disallowed allowlist would
         # otherwise look like a successful exit-0 cycle that did no work.
@@ -504,7 +540,7 @@ def cmd_babysit(args: argparse.Namespace) -> int:
         results = babysit_multiple(
             owner=args.owner,
             repo=args.repo,
-            pr_numbers=list(args.pr_numbers),
+            pr_numbers=pr_numbers,
             attribution=args.attribution,
             max_fixes=args.max_fixes,
         )

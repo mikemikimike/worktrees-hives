@@ -219,12 +219,18 @@ class TestPlan:
         assert entry["stack_id"] is None
         assert entry["number"] == 9
 
-    def test_owner_allowlist_denies_by_default(self, monkeypatch, capsys):
-        """Without --allow-unlisted and with no allowlist, nothing is scheduled."""
+    def test_repo_flag_rejects_when_allowlist_is_empty(self, monkeypatch, capsys):
+        """Explicit --repo is still owner-scoped: empty allowlist fails closed."""
         monkeypatch.delenv("WH_ALLOWED_OWNERS", raising=False)
         self._stub_repo(monkeypatch, [_pr(1, "feat/base", "main")])
-        assert main(["plan", "--repo", f"{OWNER}/{REPO}"]) == 0
-        assert "No PRs to process" in capsys.readouterr().out
+        assert main(["plan", "--repo", f"{OWNER}/{REPO}"]) == 2
+        assert "not in allowlist" in capsys.readouterr().err
+
+    def test_repo_flag_rejects_unlisted_owner(self, monkeypatch, capsys):
+        monkeypatch.setenv("WH_ALLOWED_OWNERS", "someone-else")
+        self._stub_repo(monkeypatch, [_pr(1, "feat/base", "main")])
+        assert main(["plan", "--repo", f"{OWNER}/{REPO}"]) == 2
+        assert "not in allowlist" in capsys.readouterr().err
 
     def test_repo_targets_are_deduped(self, monkeypatch, capsys):
         self._stub_repo(monkeypatch, [_pr(1, "fix/a", "main")])
@@ -442,6 +448,32 @@ class TestBabysit:
         assert env["ok"] is False
         assert env["command"] == "babysit"
         assert env["error"]["code"] == "OWNER_NOT_ALLOWED"
+        assert called["n"] == 0
+
+    def test_duplicate_pr_numbers_rejected_before_cycle(self, monkeypatch, capsys):
+        _allow_owner(monkeypatch)
+        called = {"n": 0}
+
+        def fake(**kwargs):
+            called["n"] += 1
+            return []
+
+        monkeypatch.setattr("worktrees_hives.babysit.babysit_multiple", fake)
+        assert main(["babysit", "--owner", OWNER, "--repo", REPO, "1", "2", "1"]) == 1
+        assert "duplicate PR" in capsys.readouterr().err
+        assert called["n"] == 0
+
+    def test_non_positive_pr_number_rejected_before_cycle(self, monkeypatch, capsys):
+        _allow_owner(monkeypatch)
+        called = {"n": 0}
+
+        def fake(**kwargs):
+            called["n"] += 1
+            return []
+
+        monkeypatch.setattr("worktrees_hives.babysit.babysit_multiple", fake)
+        assert main(["babysit", "--owner", OWNER, "--repo", REPO, "0"]) == 1
+        assert "positive" in capsys.readouterr().err
         assert called["n"] == 0
 
     def test_json_envelope_includes_check_and_thread_counts(self, monkeypatch, capsys):
