@@ -264,10 +264,10 @@ class TestOrchestratorTimeout:
         assert report.results[0].status == WorkerStatus.SUCCEEDED
 
     async def test_worker_raised_timeout_error_is_failed(self):
-        """A worker that raises asyncio.TimeoutError is reported as FAILED."""
+        """A worker that raises TimeoutError is reported as FAILED."""
 
         async def raise_timeout() -> None:
-            raise asyncio.TimeoutError("boom")
+            raise TimeoutError("boom")
 
         o = Orchestrator(concurrency=2, default_timeout=None)
         spec = WorkerSpec(worker_id="w1", fn=raise_timeout)

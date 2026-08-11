@@ -83,9 +83,9 @@ class WorkerSpec:
 
 
 class WorkerTimeoutError(Exception):
-    """Raised when a worker coroutine raises :exc:`asyncio.TimeoutError`."""
+    """Raised when a worker coroutine raises :exc:`TimeoutError`."""
 
-    def __init__(self, original: asyncio.TimeoutError) -> None:
+    def __init__(self, original: TimeoutError) -> None:
         super().__init__(str(original))
         self.original = original
 
@@ -196,7 +196,7 @@ class Orchestrator:
                     result=result,
                     elapsed_seconds=time.monotonic() - start,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 _notify(WorkerStatus.TIMED_OUT)
                 return WorkerResult(
                     worker_id=spec.worker_id,
@@ -238,7 +238,7 @@ class Orchestrator:
         """Run a worker coroutine, converting TimeoutError to a typed exception."""
         try:
             return await coro
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise WorkerTimeoutError(exc) from exc
 
     @staticmethod
