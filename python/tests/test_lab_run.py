@@ -70,6 +70,10 @@ class TestNeverMerge:
         with pytest.raises(PolicyError, match=r"NEVER_MERGE|merge"):
             assert_command_allowed("gh pr merge 1 --squash")
 
+    def test_denies_gh_api_merge_slashless(self) -> None:
+        with pytest.raises(PolicyError, match=r"NEVER_MERGE|merge"):
+            assert_command_allowed("gh api repos/acme/repo/merges -f base=main -f head=feature")
+
     def test_denies_force_after_refspec(self) -> None:
         with pytest.raises(PolicyError, match=r"BARE_FORCE|force"):
             assert_command_allowed(["git", "push", "origin", "main", "--force"])

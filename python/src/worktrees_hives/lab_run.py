@@ -40,7 +40,9 @@ _MERGE_TEXT_RE = re.compile(
     r"(?ix)"
     r"\bgh\s+pr\s+merge\b"
     r"|\bmergePullRequest\b"
-    r"|/repos/[^/\s]+/[^/\s]+/merges?\b"
+    # REST merge endpoints (with or without leading slash; gh api examples omit /)
+    r"|/?repos/[^/\s]+/[^/\s]+/merges?\b"
+    r"|\bgh\s+api\b[^\n]*\brepos/[^/\s]+/[^/\s]+/merges?\b"
 )
 
 # Shell -c payload: git … push … with any force form (free-form command path).
