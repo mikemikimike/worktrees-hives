@@ -21,7 +21,6 @@ import re
 import shlex
 import signal
 import subprocess
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -42,7 +41,8 @@ _MERGE_TEXT_RE = re.compile(
     r"|\bmergePullRequest\b"
     # REST merge endpoints (with or without leading slash; gh api examples omit /)
     r"|/?repos/[^/\s]+/[^/\s]+/merges?\b"
-    r"|\bgh\s+api\b[^\n]*\brepos/[^/\s]+/[^/\s]+/merges?\b"
+    r"|/?repos/[^/\s]+/[^/\s]+/pulls/\d+/merge\b"
+    r"|\bgh\s+api\b[^\n]*\brepos/[^/\s]+/[^/\s]+/(?:merges?|pulls/\d+/merge)\b"
 )
 
 # Shell -c payload: git … push … with any force form (free-form command path).
@@ -51,7 +51,7 @@ _SHELL_C_RE = re.compile(
 )
 _GIT_PUSH_FORCE_IN_PAYLOAD = re.compile(
     r"(?ix)\bgit(?:\.exe)?\b(?:\s+\S+)*\s+push\b.*?"
-    r"(?:--force(?:-with-lease)?(?:=|\b)|(?<![\w-])-f\b|-[A-Za-z]*f[A-Za-z]*)"
+    r"(?:--force(?:-with-lease)?(?:=|\b)|(?<![\w-])-f\b|-[A-Za-z]*f[A-Za-z]*|\+\S+:\S*)"
 )
 
 
@@ -176,6 +176,9 @@ def _argv_has_force_push(argv: list[str]) -> bool:
             for opt in argv[j + 1 :]:
                 if _is_force_token(opt):
                     return True
+                # Force refspec: +src:dst (git-push(1)); not a flag (no leading --).
+                if opt.startswith("+") and not opt.startswith("--"):
+                    return True
         i += 1
     return False
 
@@ -262,14 +265,11 @@ def run_lab_unit(
         raise LabRunError(f"allocated job {job.job_id!r} has no worktree_path")
     jpath, mpath = findings_paths(wt)
     command_exit: int | None = None
-    command_started_at: float | None = None
     try:
         if command is not None:
-            # Command-backed runs must produce a fresh findings pair.
-            for stale in (jpath, mpath):
-                with contextlib.suppress(FileNotFoundError, OSError):
-                    stale.unlink()
-            command_started_at = time.time()
+            # Command-backed runs must produce a fresh findings pair: hard wipe
+            # so load cannot credit pre-existing files (no mtime race).
+            _wipe_findings_pair(jpath, mpath)
             try:
                 command_exit = _run_command(command, cwd=wt, timeout=float(command_timeout))
             except LabRunError as exc:
@@ -291,8 +291,6 @@ def run_lab_unit(
         try:
             report = load_findings_pair(jpath, mpath)
             _assert_report_matches_job(report, job)
-            if command_started_at is not None:
-                _assert_findings_fresh(jpath, mpath, command_started_at)
         except FindingsValidationError as exc:
             findings_error = str(exc)
             report = None
@@ -399,17 +397,17 @@ def _teardown_job(manager: LabJobManager, job_id: str) -> tuple[LabJob | None, s
         return None, f"teardown failed: {exc}"
 
 
-def _assert_findings_fresh(jpath: Path, mpath: Path, started_at: float) -> None:
-    """Require both findings files to be written at/after command start."""
-    # Tolerate small clock skew / coarse mtime resolution.
-    floor = started_at - 1.0
+def _wipe_findings_pair(jpath: Path, mpath: Path) -> None:
+    """Remove existing findings so a command must recreate them (freshness)."""
     for path in (jpath, mpath):
         try:
-            mtime = path.stat().st_mtime
+            path.unlink()
+        except FileNotFoundError:
+            continue
         except OSError as exc:
-            raise FindingsValidationError(f"findings not refreshed after command: {path}") from exc
-        if mtime < floor:
-            raise FindingsValidationError(f"findings stale after command (not rewritten): {path}")
+            raise LabRunError(f"cannot remove stale findings {path}: {exc}") from exc
+    if jpath.exists() or mpath.exists():
+        raise LabRunError(f"stale findings still present after wipe: {jpath} / {mpath}")
 
 
 def _assert_report_matches_job(report: FindingsReport, job: LabJob) -> None:

@@ -74,6 +74,14 @@ class TestNeverMerge:
         with pytest.raises(PolicyError, match=r"NEVER_MERGE|merge"):
             assert_command_allowed("gh api repos/acme/repo/merges -f base=main -f head=feature")
 
+    def test_denies_gh_api_pulls_merge(self) -> None:
+        with pytest.raises(PolicyError, match=r"NEVER_MERGE|merge"):
+            assert_command_allowed("gh api -X PUT repos/acme/repo/pulls/123/merge")
+
+    def test_denies_force_refspec(self) -> None:
+        with pytest.raises(PolicyError, match=r"FORCE_PUSH|force"):
+            assert_command_allowed(["git", "push", "origin", "+HEAD:main"])
+
     def test_denies_force_after_refspec(self) -> None:
         with pytest.raises(PolicyError, match=r"BARE_FORCE|force"):
             assert_command_allowed(["git", "push", "origin", "main", "--force"])
