@@ -9,21 +9,22 @@ Does **not** own batch fan-out (#83), aggregate tables (#16), findings schema
 (#82), or job-store internals (#85).
 
 **Never merges.** No merge APIs; optional ``--command`` is denylisted for
-``gh pr merge`` / GraphQL merge / bare force-push.
+``gh pr merge`` / GraphQL merge / bare force-push (``--force-with-lease`` ok).
 """
 
 from __future__ import annotations
 
 import contextlib
+import math
+import os
 import re
 import shlex
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from worktrees_hives.errors import FindingsValidationError
+from worktrees_hives.errors import FindingsValidationError, PolicyError
 from worktrees_hives.findings import AgentRole, FindingsReport, load_findings_pair
 from worktrees_hives.lab_jobs import LabJob, LabJobError, LabJobManager
 
@@ -33,19 +34,16 @@ if TYPE_CHECKING:
 FINDINGS_JSON_NAME = "findings.json"
 FINDINGS_MD_NAME = "findings.md"
 
-# Reject merge / destructive force-push patterns in --command (defense in depth).
-_MERGE_DENY_RE = re.compile(
+_MERGE_TEXT_RE = re.compile(
     r"(?ix)"
     r"\bgh\s+pr\s+merge\b"
     r"|\bmergePullRequest\b"
     r"|/repos/[^/\s]+/[^/\s]+/merges?\b"
-    r"|\bgit\s+push\s+(?:-[^\s]*\s+)*(-f|--force)(?![-\w])"
-    r"|\bgit\s+push\s+--force\b"
 )
 
 
 class LabRunError(LabJobError):
-    """Lab run orchestration failure (policy / findings / command)."""
+    """Lab run orchestration failure (findings / command execution)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,14 +92,51 @@ def findings_paths(worktree_path: str | Path) -> tuple[Path, Path]:
     return root / FINDINGS_JSON_NAME, root / FINDINGS_MD_NAME
 
 
+def _command_to_argv(command: str | Sequence[str]) -> list[str]:
+    """Normalize command to argv; platform-aware shlex for string form."""
+    if isinstance(command, str):
+        # posix=False preserves Windows backslashes in unquoted paths.
+        return shlex.split(command, posix=(os.name != "nt"))
+    return list(command)
+
+
+def _is_bare_force_token(token: str) -> bool:
+    """True for bare force flags; False for ``--force-with-lease`` (allowed)."""
+    if token == "--force" or token.startswith("--force="):
+        return True
+    if token == "-f":
+        return True
+    # Combined short options: -fu, -ff, -vf, etc. (not --force-with-lease).
+    return token.startswith("-") and not token.startswith("--") and "f" in token[1:]
+
+
 def assert_command_allowed(command: str | Sequence[str]) -> None:
-    """Reject merge / bare force-push command strings (never-merge)."""
+    """Reject merge / bare force-push (never-merge). Raises :class:`PolicyError`."""
     text = command if isinstance(command, str) else " ".join(command)
-    if _MERGE_DENY_RE.search(text):
-        raise LabRunError(
-            "lab run --command refused: merge and bare force-push are denied "
-            f"(never-merge policy): {text!r}"
+    if _MERGE_TEXT_RE.search(text):
+        raise PolicyError(
+            "NEVER_MERGE",
+            "lab run --command refused: merge operations are denied (never-merge policy)",
         )
+
+    argv = _command_to_argv(command)
+    # Detect `git push … -f|--force` with force flag anywhere after push.
+    for i, tok in enumerate(argv):
+        if tok != "git":
+            continue
+        # Find push subcommand after optional git global options.
+        j = i + 1
+        while j < len(argv) and argv[j].startswith("-"):
+            j += 1
+        if j >= len(argv) or argv[j] != "push":
+            continue
+        for opt in argv[j + 1 :]:
+            if _is_bare_force_token(opt):
+                raise PolicyError(
+                    "BARE_FORCE_PUSH",
+                    "lab run --command refused: bare force-push is denied "
+                    "(use --force-with-lease only when policy allows; never-merge path)",
+                )
 
 
 def run_lab_unit(
@@ -115,8 +150,7 @@ def run_lab_unit(
     branch: str | None = None,
     job_id: str | None = None,
     command: str | Sequence[str] | None = None,
-    command_timeout: float | None = 3600.0,
-    validate_findings: bool = True,
+    command_timeout: float = 3600.0,
     teardown_on_error: bool = False,
 ) -> LabRunResult:
     """Allocate a lab job, optionally run a command, require findings pair.
@@ -126,13 +160,23 @@ def run_lab_unit(
     manager:
         Job manager (worktree allocate/teardown via ``wh``).
     command:
-        Optional shell string or argv list run with ``cwd=worktree_path``.
-        Merge / bare ``git push --force`` are rejected before spawn.
-    validate_findings:
-        When True (default), load and validate ``findings.json`` + ``findings.md``.
+        Optional argv string or list run with ``cwd=worktree_path`` (no shell).
+        Merge / bare ``git push --force`` are rejected **before** allocate.
+    command_timeout:
+        Positive finite seconds for the optional command.
     teardown_on_error:
         Tear down the job if command or findings validation fails.
     """
+    if command is not None:
+        assert_command_allowed(command)
+    if (
+        not isinstance(command_timeout, (int, float))
+        or isinstance(command_timeout, bool)
+        or not math.isfinite(float(command_timeout))
+        or float(command_timeout) <= 0
+    ):
+        raise LabRunError("command_timeout must be a finite number greater than 0")
+
     job = manager.allocate(
         owner=owner,
         repo=repo,
@@ -149,7 +193,7 @@ def run_lab_unit(
     command_exit: int | None = None
     try:
         if command is not None:
-            command_exit = _run_command(command, cwd=wt, timeout=command_timeout)
+            command_exit = _run_command(command, cwd=wt, timeout=float(command_timeout))
             if command_exit != 0:
                 result = LabRunResult(
                     job=job,
@@ -165,18 +209,9 @@ def run_lab_unit(
                     _safe_teardown(manager, job.job_id)
                 return result
 
-        if not validate_findings:
-            return LabRunResult(
-                job=job,
-                report=None,
-                findings_json=str(jpath),
-                findings_md=str(mpath),
-                command_exit=command_exit,
-                ok=True,
-            )
-
         try:
             report = load_findings_pair(jpath, mpath)
+            _assert_report_matches_job(report, job)
         except FindingsValidationError as exc:
             result = LabRunResult(
                 job=job,
@@ -206,15 +241,38 @@ def run_lab_unit(
         raise
 
 
+def _assert_report_matches_job(report: FindingsReport, job: LabJob) -> None:
+    """Ensure findings identity matches the allocated lab job."""
+    if report.hypothesis_id != job.hypothesis_id:
+        raise FindingsValidationError(
+            f"findings hypothesis_id {report.hypothesis_id!r} "
+            f"does not match job {job.hypothesis_id!r}"
+        )
+    if report.agent_id != job.agent_id:
+        raise FindingsValidationError(
+            f"findings agent_id {report.agent_id!r} does not match job {job.agent_id!r}"
+        )
+    if report.role != job.role:
+        raise FindingsValidationError(
+            f"findings role {report.role!r} does not match job {job.role!r}"
+        )
+    if job.worktree_path:
+        report_wt = os.path.abspath(os.path.expanduser(report.worktree))
+        job_wt = os.path.abspath(os.path.expanduser(job.worktree_path))
+        if report_wt != job_wt:
+            raise FindingsValidationError(
+                f"findings worktree {report_wt!r} does not match job {job_wt!r}"
+            )
+
+
 def _run_command(
     command: str | Sequence[str],
     *,
     cwd: str,
-    timeout: float | None,
+    timeout: float,
 ) -> int:
     assert_command_allowed(command)
-    # String form is shlex-split (no shell); sequence form is argv as-is.
-    argv = shlex.split(command) if isinstance(command, str) else list(command)
+    argv = _command_to_argv(command)
     if not argv:
         raise LabRunError("lab run --command is empty")
     try:
@@ -230,13 +288,8 @@ def _run_command(
         raise LabRunError(f"lab run --command timed out after {timeout}s") from exc
     except OSError as exc:
         raise LabRunError(f"lab run --command failed to start: {exc}") from exc
-    if completed.stderr:
-        # Diagnostics on stderr; do not dump secrets-heavy stdout.
-        print(
-            completed.stderr,
-            end="" if completed.stderr.endswith("\n") else "\n",
-            file=sys.stderr,
-        )
+    # Do not echo child stderr (may contain tokens); exit code is enough.
+    _ = completed.stderr
     return int(completed.returncode)
 
 

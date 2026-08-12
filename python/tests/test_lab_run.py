@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import sys
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
 
 from worktrees_hives.cli import main
+from worktrees_hives.errors import PolicyError
 from worktrees_hives.findings import (
     AgentRole,
     Finding,
@@ -19,7 +21,6 @@ from worktrees_hives.findings import (
 )
 from worktrees_hives.lab_jobs import LabJob, LabJobStatus
 from worktrees_hives.lab_run import (
-    LabRunError,
     assert_command_allowed,
     findings_paths,
     run_lab_unit,
@@ -65,17 +66,38 @@ def _report(worktree: str) -> FindingsReport:
 
 
 class TestNeverMerge:
-    def test_command_denies_gh_pr_merge(self) -> None:
-        with pytest.raises(LabRunError, match="never-merge"):
+    def test_denies_gh_pr_merge(self) -> None:
+        with pytest.raises(PolicyError, match=r"NEVER_MERGE|merge"):
             assert_command_allowed("gh pr merge 1 --squash")
 
-    def test_command_denies_bare_force_push(self) -> None:
-        with pytest.raises(LabRunError, match="never-merge"):
-            assert_command_allowed(["git", "push", "--force", "origin", "main"])
+    def test_denies_force_after_refspec(self) -> None:
+        with pytest.raises(PolicyError, match=r"BARE_FORCE|force"):
+            assert_command_allowed(["git", "push", "origin", "main", "--force"])
+
+    def test_denies_short_f_after_remote(self) -> None:
+        with pytest.raises(PolicyError, match=r"BARE_FORCE|force"):
+            assert_command_allowed("git push origin -f main")
+
+    def test_allows_force_with_lease(self) -> None:
+        assert_command_allowed(["git", "push", "--force-with-lease", "origin", "HEAD"])
 
     def test_cli_has_no_merge_subcommand(self) -> None:
         with pytest.raises(SystemExit):
             main(["merge"])
+
+    def test_denied_command_skips_allocate(self, tmp_path: Path) -> None:
+        mgr = MagicMock()
+        with pytest.raises(PolicyError):
+            run_lab_unit(
+                mgr,
+                owner=OWNER,
+                repo=REPO,
+                hypothesis_id="H-001",
+                agent_id="grok",
+                role=AgentRole.AGENT,
+                command="gh pr merge 99",
+            )
+        mgr.allocate.assert_not_called()
 
 
 class TestRunLabUnit:
@@ -115,6 +137,28 @@ class TestRunLabUnit:
         assert result.error_code == "FINDINGS_INVALID"
         assert "missing" in (result.error_message or "").lower()
 
+    def test_mismatched_hypothesis_fails(self, tmp_path: Path) -> None:
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        bad = _report(str(wt))
+        # hypothesis_id is frozen; rebuild
+        from dataclasses import replace
+
+        bad = replace(bad, hypothesis_id="OTHER")
+        write_findings_pair(bad, *findings_paths(wt))
+        mgr = MagicMock()
+        mgr.allocate.return_value = _job(str(wt))
+        result = run_lab_unit(
+            mgr,
+            owner=OWNER,
+            repo=REPO,
+            hypothesis_id="H-001",
+            agent_id="grok",
+            role=AgentRole.AGENT,
+        )
+        assert result.ok is False
+        assert "hypothesis_id" in (result.error_message or "")
+
     def test_command_failure(self, tmp_path: Path) -> None:
         wt = tmp_path / "wt"
         wt.mkdir()
@@ -127,30 +171,13 @@ class TestRunLabUnit:
             hypothesis_id="H-001",
             agent_id="grok",
             role=AgentRole.AGENT,
-            command=["false"],
+            command=[sys.executable, "-c", "raise SystemExit(1)"],
             teardown_on_error=True,
         )
         assert result.ok is False
         assert result.error_code == "COMMAND_FAILED"
         assert result.command_exit != 0
         mgr.teardown.assert_called_once()
-
-    def test_merge_command_refused_before_allocate_side_effects(self, tmp_path: Path) -> None:
-        """Deny list raises from run_lab_unit after allocate when command runs."""
-        wt = tmp_path / "wt"
-        wt.mkdir()
-        mgr = MagicMock()
-        mgr.allocate.return_value = _job(str(wt))
-        with pytest.raises(LabRunError, match="never-merge"):
-            run_lab_unit(
-                mgr,
-                owner=OWNER,
-                repo=REPO,
-                hypothesis_id="H-001",
-                agent_id="grok",
-                role=AgentRole.AGENT,
-                command="gh pr merge 99",
-            )
 
 
 class TestCliLabRun:
@@ -161,6 +188,7 @@ class TestCliLabRun:
         out = capsys.readouterr().out
         assert "hypothesis" in out.lower()
         assert "findings" in out.lower()
+        assert "skip-findings" not in out
 
     def test_json_envelope_success(self, tmp_path: Path, monkeypatch, capsys) -> None:
         wt = tmp_path / "wt"
@@ -207,6 +235,34 @@ class TestCliLabRun:
         assert env["schema_version"] == 1
         assert env["command"] == "lab.run"
         assert env["data"]["job_id"] == job.job_id
+
+    def test_policy_denied_command_exit_2(self, monkeypatch, capsys) -> None:
+        monkeypatch.setattr("worktrees_hives.cli.WhClient", MagicMock)
+        monkeypatch.setattr(
+            "worktrees_hives.cli.LabJobManager",
+            lambda *a, **k: MagicMock(),
+        )
+        code = main(
+            [
+                "--json",
+                "lab",
+                "run",
+                "--owner",
+                OWNER,
+                "--repo",
+                REPO,
+                "--hypothesis-id",
+                "H-001",
+                "--agent-id",
+                "grok",
+                "--command",
+                "gh pr merge 1",
+            ]
+        )
+        assert code == 2
+        env = json.loads(capsys.readouterr().out)
+        assert env["ok"] is False
+        assert env["error"]["code"] in {"NEVER_MERGE", "BARE_FORCE_PUSH"}
 
     def test_json_envelope_findings_failure(self, tmp_path: Path, monkeypatch, capsys) -> None:
         job = _job(str(tmp_path / "wt"))

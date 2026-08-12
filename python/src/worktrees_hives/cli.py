@@ -18,7 +18,7 @@ from worktrees_hives.discover import OwnerPolicyError
 from worktrees_hives.errors import FindingsValidationError, PolicyError
 from worktrees_hives.findings import AgentRole
 from worktrees_hives.lab_jobs import LabJobError, LabJobManager, LabJobStore
-from worktrees_hives.lab_run import LabRunError, run_lab_unit
+from worktrees_hives.lab_run import LabRunError, assert_command_allowed, run_lab_unit
 from worktrees_hives.watchlist import (
     CorruptStateError,
     JobState,
@@ -595,6 +595,9 @@ def cmd_lab_run(args: argparse.Namespace) -> int:
     run_command = getattr(args, "run_command", None) or None
 
     def run() -> int:
+        # Policy denials before any allocate (exit 2 via _guard / PolicyError).
+        if run_command is not None:
+            assert_command_allowed(run_command)
         store = LabJobStore(args.lab_jobs_path) if args.lab_jobs_path else None
         manager = LabJobManager(
             WhClient(),
@@ -614,13 +617,16 @@ def cmd_lab_run(args: argparse.Namespace) -> int:
                 job_id=args.job_id,
                 command=run_command,
                 command_timeout=args.command_timeout,
-                validate_findings=not args.skip_findings,
                 teardown_on_error=args.teardown_on_error,
             )
         except LabRunError as e:
             return _fail("lab.run", "LAB_RUN_ERROR", str(e), as_json=as_json, exit_code=1)
         except LabJobError as e:
-            return _fail("lab.run", "LAB_JOB_ERROR", str(e), as_json=as_json, exit_code=1)
+            msg = str(e)
+            # Owner allowlist / deny-by-default is policy (exit 2).
+            if "allowlist" in msg.lower() or "deny-by-default" in msg.lower():
+                raise PolicyError("OWNER_NOT_ALLOWED", msg) from e
+            return _fail("lab.run", "LAB_JOB_ERROR", msg, as_json=as_json, exit_code=1)
         except FindingsValidationError as e:
             return _fail("lab.run", "FINDINGS_INVALID", str(e), as_json=as_json, exit_code=1)
 
@@ -837,12 +843,7 @@ def main(argv: list[str] | None = None) -> int:
         "--command-timeout",
         type=float,
         default=3600.0,
-        help="Seconds before --command is killed (default: 3600)",
-    )
-    run_p.add_argument(
-        "--skip-findings",
-        action="store_true",
-        help="Skip findings.json + findings.md validation (not recommended)",
+        help="Seconds before --command is killed (default: 3600; must be > 0)",
     )
     run_p.add_argument(
         "--teardown-on-error",
