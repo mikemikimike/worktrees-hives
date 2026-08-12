@@ -607,6 +607,9 @@ class LabJobManager:
         raise LabJobError(f"wh worktree remove failed: {resp.error.code}: {resp.error.message}")
 
     def _wh_run(self, *args: str) -> SuccessResponse | ErrorResponse:
+        # Align Rust path derivation with this manager's worktree_base.
+        prev = os.environ.get("WH_WORKTREE_BASE")
+        os.environ["WH_WORKTREE_BASE"] = self.worktree_base
         try:
             return self.wh_client.run(*args)
         except WhBinaryNotFoundError as exc:
@@ -620,3 +623,8 @@ class LabJobManager:
             raise LabJobError(f"wh exited {exc.returncode}: {exc.stderr or 'no stderr'}") from exc
         except WhError as exc:
             raise LabJobError(str(exc)) from exc
+        finally:
+            if prev is None:
+                os.environ.pop("WH_WORKTREE_BASE", None)
+            else:
+                os.environ["WH_WORKTREE_BASE"] = prev

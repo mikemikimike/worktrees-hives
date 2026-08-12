@@ -19,6 +19,7 @@ import math
 import os
 import re
 import shlex
+import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +40,14 @@ _MERGE_TEXT_RE = re.compile(
     r"\bgh\s+pr\s+merge\b"
     r"|\bmergePullRequest\b"
     r"|/repos/[^/\s]+/[^/\s]+/merges?\b"
+)
+
+# git…push… with bare force remaining after stripping --force-with-lease.
+_GIT_PUSH_RE = re.compile(r"(?i)\bgit(?:\.exe)?\b[\s\S]*\bpush\b")
+_FORCE_WITH_LEASE_RE = re.compile(r"(?i)--force-with-lease(?:=\S+)?")
+# After --force-with-lease is stripped; allow trailing quote/punct (shell wrappers).
+_BARE_FORCE_RE = re.compile(
+    r"(?i)(?:^|[\s'\"])(?:--force(?![\w-])|(?<![\w-])-f(?![\w-])|-[A-Za-z]*f[A-Za-z]*)"
 )
 
 
@@ -92,12 +101,26 @@ def findings_paths(worktree_path: str | Path) -> tuple[Path, Path]:
     return root / FINDINGS_JSON_NAME, root / FINDINGS_MD_NAME
 
 
+def _strip_win_quotes(token: str) -> str:
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'":
+        return token[1:-1]
+    return token
+
+
 def _command_to_argv(command: str | Sequence[str]) -> list[str]:
     """Normalize command to argv; platform-aware shlex for string form."""
     if isinstance(command, str):
         # posix=False preserves Windows backslashes in unquoted paths.
-        return shlex.split(command, posix=(os.name != "nt"))
+        parts = shlex.split(command, posix=(os.name != "nt"))
+        if os.name == "nt":
+            parts = [_strip_win_quotes(p) for p in parts]
+        return parts
     return list(command)
+
+
+def _is_git_token(token: str) -> bool:
+    base = os.path.basename(token.rstrip("/\\")).casefold()
+    return base in {"git", "git.exe"}
 
 
 def _is_bare_force_token(token: str) -> bool:
@@ -110,6 +133,51 @@ def _is_bare_force_token(token: str) -> bool:
     return token.startswith("-") and not token.startswith("--") and "f" in token[1:]
 
 
+def _skip_git_global_options(argv: list[str], start: int) -> int:
+    """Advance index past git global options to the subcommand."""
+    j = start
+    while j < len(argv):
+        tok = argv[j]
+        if not tok.startswith("-"):
+            break
+        # Options that require a following argument.
+        if tok in {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"}:
+            j += 2
+            continue
+        if tok.startswith(("--git-dir=", "--work-tree=", "--namespace=", "--config-env=")):
+            j += 1
+            continue
+        if tok.startswith("--") and "=" in tok:
+            j += 1
+            continue
+        j += 1
+    return j
+
+
+def _argv_has_bare_force_push(argv: list[str]) -> bool:
+    """Detect bare force-push in structured argv (path-qualified git ok)."""
+    i = 0
+    while i < len(argv):
+        if not _is_git_token(argv[i]):
+            i += 1
+            continue
+        j = _skip_git_global_options(argv, i + 1)
+        if j < len(argv) and argv[j] == "push":
+            for opt in argv[j + 1 :]:
+                if _is_bare_force_token(opt):
+                    return True
+        i += 1
+    return False
+
+
+def _text_has_bare_force_push(text: str) -> bool:
+    """Catch wrappers (sh -c 'git push -f') via text after stripping lease form."""
+    if not _GIT_PUSH_RE.search(text):
+        return False
+    cleaned = _FORCE_WITH_LEASE_RE.sub(" ", text)
+    return _BARE_FORCE_RE.search(cleaned) is not None
+
+
 def assert_command_allowed(command: str | Sequence[str]) -> None:
     """Reject merge / bare force-push (never-merge). Raises :class:`PolicyError`."""
     text = command if isinstance(command, str) else " ".join(command)
@@ -120,23 +188,12 @@ def assert_command_allowed(command: str | Sequence[str]) -> None:
         )
 
     argv = _command_to_argv(command)
-    # Detect `git push … -f|--force` with force flag anywhere after push.
-    for i, tok in enumerate(argv):
-        if tok != "git":
-            continue
-        # Find push subcommand after optional git global options.
-        j = i + 1
-        while j < len(argv) and argv[j].startswith("-"):
-            j += 1
-        if j >= len(argv) or argv[j] != "push":
-            continue
-        for opt in argv[j + 1 :]:
-            if _is_bare_force_token(opt):
-                raise PolicyError(
-                    "BARE_FORCE_PUSH",
-                    "lab run --command refused: bare force-push is denied "
-                    "(use --force-with-lease only when policy allows; never-merge path)",
-                )
+    if _argv_has_bare_force_push(argv) or _text_has_bare_force_push(text):
+        raise PolicyError(
+            "BARE_FORCE_PUSH",
+            "lab run --command refused: bare force-push is denied "
+            "(use --force-with-lease only when policy allows; never-merge path)",
+        )
 
 
 def run_lab_unit(
@@ -168,6 +225,9 @@ def run_lab_unit(
         Tear down the job if command or findings validation fails.
     """
     if command is not None:
+        argv_pre = _command_to_argv(command)
+        if not argv_pre:
+            raise LabRunError("lab run --command is empty")
         assert_command_allowed(command)
     if (
         not isinstance(command_timeout, (int, float))
@@ -205,9 +265,7 @@ def run_lab_unit(
                     error_code="COMMAND_FAILED",
                     error_message=f"command exited {command_exit}",
                 )
-                if teardown_on_error:
-                    _safe_teardown(manager, job.job_id)
-                return result
+                return _maybe_teardown(manager, result, teardown_on_error)
 
         try:
             report = load_findings_pair(jpath, mpath)
@@ -223,9 +281,7 @@ def run_lab_unit(
                 error_code="FINDINGS_INVALID",
                 error_message=str(exc),
             )
-            if teardown_on_error:
-                _safe_teardown(manager, job.job_id)
-            return result
+            return _maybe_teardown(manager, result, teardown_on_error)
 
         return LabRunResult(
             job=job,
@@ -237,8 +293,40 @@ def run_lab_unit(
         )
     except Exception:
         if teardown_on_error:
-            _safe_teardown(manager, job.job_id)
+            note = _teardown_with_note(manager, job.job_id)
+            if note:
+                raise LabRunError(note) from None
         raise
+
+
+def _maybe_teardown(
+    manager: LabJobManager, result: LabRunResult, teardown_on_error: bool
+) -> LabRunResult:
+    if not teardown_on_error or result.ok:
+        return result
+    note = _teardown_with_note(manager, result.job.job_id)
+    if not note:
+        return result
+    msg = result.error_message or ""
+    combined = f"{msg}; {note}" if msg else note
+    return LabRunResult(
+        job=result.job,
+        report=result.report,
+        findings_json=result.findings_json,
+        findings_md=result.findings_md,
+        command_exit=result.command_exit,
+        ok=False,
+        error_code=result.error_code,
+        error_message=combined,
+    )
+
+
+def _teardown_with_note(manager: LabJobManager, job_id: str) -> str | None:
+    try:
+        manager.teardown(job_id, force=True)
+    except LabJobError as exc:
+        return f"teardown failed: {exc}"
+    return None
 
 
 def _assert_report_matches_job(report: FindingsReport, job: LabJob) -> None:
@@ -275,24 +363,39 @@ def _run_command(
     argv = _command_to_argv(command)
     if not argv:
         raise LabRunError("lab run --command is empty")
+
+    # New session so timeout can kill the whole process group (POSIX).
+    popen_kwargs: dict[str, Any] = {
+        "cwd": cwd,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+    }
+    if os.name == "posix":
+        popen_kwargs["start_new_session"] = True
+
     try:
-        completed = subprocess.run(
-            argv,
-            cwd=cwd,
-            timeout=timeout,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise LabRunError(f"lab run --command timed out after {timeout}s") from exc
+        proc = subprocess.Popen(argv, **popen_kwargs)
     except OSError as exc:
         raise LabRunError(f"lab run --command failed to start: {exc}") from exc
-    # Do not echo child stderr (may contain tokens); exit code is enough.
-    _ = completed.stderr
-    return int(completed.returncode)
+
+    try:
+        _stdout, _stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        _kill_process_tree(proc)
+        with contextlib.suppress(Exception):
+            proc.communicate(timeout=5)
+        raise LabRunError(f"lab run --command timed out after {timeout}s") from exc
+
+    # Discard output (may contain secrets); do not decode as text.
+    return int(proc.returncode if proc.returncode is not None else -1)
 
 
-def _safe_teardown(manager: LabJobManager, job_id: str) -> None:
-    with contextlib.suppress(LabJobError):
-        manager.teardown(job_id, force=True)
+def _kill_process_tree(proc: subprocess.Popen[Any]) -> None:
+    if os.name == "posix":
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            proc.kill()
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+        proc.kill()

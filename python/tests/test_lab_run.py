@@ -78,8 +78,34 @@ class TestNeverMerge:
         with pytest.raises(PolicyError, match=r"BARE_FORCE|force"):
             assert_command_allowed("git push origin -f main")
 
+    def test_denies_path_qualified_git(self) -> None:
+        with pytest.raises(PolicyError, match=r"BARE_FORCE|force"):
+            assert_command_allowed(["/usr/bin/git", "push", "origin", "--force"])
+
+    def test_denies_git_c_global_then_force(self) -> None:
+        with pytest.raises(PolicyError, match=r"BARE_FORCE|force"):
+            assert_command_allowed(["git", "-C", "/tmp/repo", "push", "origin", "-f"])
+
+    def test_denies_shell_wrapper_force(self) -> None:
+        with pytest.raises(PolicyError, match=r"BARE_FORCE|force"):
+            assert_command_allowed("sh -c 'git push origin main --force'")
+
     def test_allows_force_with_lease(self) -> None:
         assert_command_allowed(["git", "push", "--force-with-lease", "origin", "HEAD"])
+
+    def test_empty_command_skips_allocate(self) -> None:
+        mgr = MagicMock()
+        with pytest.raises(Exception, match="empty"):
+            run_lab_unit(
+                mgr,
+                owner=OWNER,
+                repo=REPO,
+                hypothesis_id="H-001",
+                agent_id="grok",
+                role=AgentRole.AGENT,
+                command="   ",
+            )
+        mgr.allocate.assert_not_called()
 
     def test_cli_has_no_merge_subcommand(self) -> None:
         with pytest.raises(SystemExit):
