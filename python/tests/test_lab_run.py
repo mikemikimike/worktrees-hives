@@ -211,6 +211,60 @@ class TestRunLabUnit:
         assert result.command_exit != 0
         mgr.teardown.assert_called_once()
 
+    def test_command_wipes_stale_findings(self, tmp_path: Path) -> None:
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        write_findings_pair(_report(str(wt)), *findings_paths(wt))
+        mgr = MagicMock()
+        mgr.allocate.return_value = _job(str(wt))
+        # Successful no-op command does not rewrite findings → invalid (stale wiped).
+        result = run_lab_unit(
+            mgr,
+            owner=OWNER,
+            repo=REPO,
+            hypothesis_id="H-001",
+            agent_id="grok",
+            role=AgentRole.AGENT,
+            command=[sys.executable, "-c", "pass"],
+        )
+        assert result.ok is False
+        assert result.error_code == "FINDINGS_INVALID"
+
+    def test_command_fail_with_fresh_findings(self, tmp_path: Path) -> None:
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        mgr = MagicMock()
+        mgr.allocate.return_value = _job(str(wt))
+        script = (
+            "from pathlib import Path\n"
+            "import sys\n"
+            f"wt = Path({str(wt)!r})\n"
+            "from worktrees_hives.findings import (\n"
+            "  AgentRole, Finding, FindingsReport, FindingType, ReportStatus, write_findings_pair)\n"
+            "from worktrees_hives.lab_run import findings_paths\n"
+            "r = FindingsReport(\n"
+            "  hypothesis_id='H-001', agent_id='grok', role=AgentRole.AGENT,\n"
+            f"  worktree={str(wt)!r}, status=ReportStatus.FAILED,\n"
+            "  findings=(Finding(type=FindingType.ERROR, summary='boom'),),\n"
+            ")\n"
+            "write_findings_pair(r, *findings_paths(wt))\n"
+            "raise SystemExit(2)\n"
+        )
+        result = run_lab_unit(
+            mgr,
+            owner=OWNER,
+            repo=REPO,
+            hypothesis_id="H-001",
+            agent_id="grok",
+            role=AgentRole.AGENT,
+            command=[sys.executable, "-c", script],
+        )
+        assert result.ok is False
+        assert result.error_code == "COMMAND_FAILED"
+        assert result.report is not None
+        assert result.report.status is ReportStatus.FAILED
+
+
 
 class TestCliLabRun:
     def test_help(self, capsys: pytest.CaptureFixture[str]) -> None:

@@ -21,6 +21,7 @@ import re
 import shlex
 import signal
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -259,10 +260,47 @@ def run_lab_unit(
         raise LabRunError(f"allocated job {job.job_id!r} has no worktree_path")
     jpath, mpath = findings_paths(wt)
     command_exit: int | None = None
+    command_started_at: float | None = None
     try:
         if command is not None:
-            command_exit = _run_command(command, cwd=wt, timeout=float(command_timeout))
-            if command_exit != 0:
+            # Command-backed runs must produce a fresh findings pair.
+            for stale in (jpath, mpath):
+                with contextlib.suppress(FileNotFoundError, OSError):
+                    stale.unlink()
+            command_started_at = time.time()
+            try:
+                command_exit = _run_command(
+                    command, cwd=wt, timeout=float(command_timeout)
+                )
+            except LabRunError as exc:
+                # Keep allocated job in the result for automation (timeouts, spawn errors).
+                result = LabRunResult(
+                    job=job,
+                    report=None,
+                    findings_json=str(jpath),
+                    findings_md=str(mpath),
+                    command_exit=None,
+                    ok=False,
+                    error_code="COMMAND_FAILED",
+                    error_message=str(exc),
+                )
+                return _maybe_teardown(manager, result, teardown_on_error)
+
+        report: FindingsReport | None = None
+        findings_error: str | None = None
+        try:
+            report = load_findings_pair(jpath, mpath)
+            _assert_report_matches_job(report, job)
+            if command_started_at is not None:
+                _assert_findings_fresh(jpath, mpath, command_started_at)
+        except FindingsValidationError as exc:
+            findings_error = str(exc)
+            report = None
+
+        if findings_error is not None:
+            # Prefer COMMAND_FAILED when the command itself failed, but still
+            # surface findings problems when command succeeded or was absent.
+            if command_exit is not None and command_exit != 0:
                 result = LabRunResult(
                     job=job,
                     report=None,
@@ -271,23 +309,35 @@ def run_lab_unit(
                     command_exit=command_exit,
                     ok=False,
                     error_code="COMMAND_FAILED",
-                    error_message=f"command exited {command_exit}",
+                    error_message=(
+                        f"command exited {command_exit}; findings also invalid: "
+                        f"{findings_error}"
+                    ),
                 )
-                return _maybe_teardown(manager, result, teardown_on_error)
+            else:
+                result = LabRunResult(
+                    job=job,
+                    report=None,
+                    findings_json=str(jpath),
+                    findings_md=str(mpath),
+                    command_exit=command_exit,
+                    ok=False,
+                    error_code="FINDINGS_INVALID",
+                    error_message=findings_error,
+                )
+            return _maybe_teardown(manager, result, teardown_on_error)
 
-        try:
-            report = load_findings_pair(jpath, mpath)
-            _assert_report_matches_job(report, job)
-        except FindingsValidationError as exc:
+        if command_exit is not None and command_exit != 0:
+            # Command failed but findings validated (partial/failed report).
             result = LabRunResult(
                 job=job,
-                report=None,
+                report=report,
                 findings_json=str(jpath),
                 findings_md=str(mpath),
                 command_exit=command_exit,
                 ok=False,
-                error_code="FINDINGS_INVALID",
-                error_message=str(exc),
+                error_code="COMMAND_FAILED",
+                error_message=f"command exited {command_exit}",
             )
             return _maybe_teardown(manager, result, teardown_on_error)
 
@@ -304,10 +354,21 @@ def run_lab_unit(
             torn, note = _teardown_job(manager, job.job_id)
             if note:
                 raise LabRunError(f"{exc}; {note}") from exc
-            if torn is not None:
-                # Prefer reporting torn-down state if we re-raise differently later.
-                _ = torn
-        raise
+            _ = torn
+        # Convert unexpected post-allocate errors into a failed result with job id.
+        if isinstance(exc, (LabRunError, PolicyError, LabJobError, FindingsValidationError)):
+            raise
+        result = LabRunResult(
+            job=job,
+            report=None,
+            findings_json=str(jpath),
+            findings_md=str(mpath),
+            command_exit=command_exit,
+            ok=False,
+            error_code="LAB_RUN_ERROR",
+            error_message=str(exc),
+        )
+        return _maybe_teardown(manager, result, teardown_on_error)
 
 
 def _maybe_teardown(
@@ -337,6 +398,21 @@ def _teardown_job(manager: LabJobManager, job_id: str) -> tuple[LabJob | None, s
         return manager.teardown(job_id, force=True), None
     except LabJobError as exc:
         return None, f"teardown failed: {exc}"
+
+
+def _assert_findings_fresh(jpath: Path, mpath: Path, started_at: float) -> None:
+    """Require both findings files to be written at/after command start."""
+    # Tolerate small clock skew / coarse mtime resolution.
+    floor = started_at - 1.0
+    for path in (jpath, mpath):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError as exc:
+            raise FindingsValidationError(f"findings not refreshed after command: {path}") from exc
+        if mtime < floor:
+            raise FindingsValidationError(
+                f"findings stale after command (not rewritten): {path}"
+            )
 
 
 def _assert_report_matches_job(report: FindingsReport, job: LabJob) -> None:
@@ -402,7 +478,10 @@ def _run_command(
             with contextlib.suppress(Exception):
                 proc.wait(timeout=5)
             raise LabRunError(f"lab run --command timed out after {timeout}s") from exc
-        return int(proc.returncode if proc.returncode is not None else -1)
+        code = int(proc.returncode if proc.returncode is not None else -1)
+        # Reap descendants left behind by backgrounded children after launcher exit.
+        _kill_process_tree(proc)
+        return code
     except BaseException:
         # Ctrl+C / unexpected exit: do not orphan the lab command.
         _kill_process_tree(proc)
