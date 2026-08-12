@@ -153,37 +153,37 @@ class FindingsReport:
 
     def to_markdown(self) -> str:
         """Render the canonical Markdown template filled from this report."""
-        discoveries = [f for f in self.findings if f.type is FindingType.DISCOVERY]
-        nulls = [f for f in self.findings if f.type is FindingType.NULL_RESULT]
-        errors = [f for f in self.findings if f.type is FindingType.ERROR]
+        discoveries = [f for f in self.findings if f.type == FindingType.DISCOVERY]
+        nulls = [f for f in self.findings if f.type == FindingType.NULL_RESULT]
+        errors = [f for f in self.findings if f.type == FindingType.ERROR]
 
         def _bullets(items: list[Finding]) -> str:
             if not items:
                 return "_None._\n"
             lines: list[str] = []
             for item in items:
-                line = f"- **{item.summary}**"
+                line = f"- **{_escape_md_inline(item.summary)}**"
                 if item.detail:
-                    line += f" — {item.detail}"
+                    line += f" — {_escape_md_inline(item.detail)}"
                 lines.append(line)
                 for ev in item.evidence:
-                    lines.append(f"  - evidence: {ev}")
+                    lines.append(f"  - evidence: {_escape_md_inline(ev)}")
             return "\n".join(lines) + "\n"
 
         evidence_lines: list[str] = []
         for item in self.findings:
             for ev in item.evidence:
-                evidence_lines.append(f"- {ev}")
+                evidence_lines.append(f"- {_escape_md_inline(ev)}")
         for art in self.artifacts:
-            evidence_lines.append(f"- artifact: {art}")
+            evidence_lines.append(f"- artifact: {_escape_md_inline(art)}")
         evidence_body = "\n".join(evidence_lines) + "\n" if evidence_lines else "_None._\n"
 
         return (
             f"# Hypothesis\n\n"
-            f"`{self.hypothesis_id}`\n\n"
+            f"`{_escape_md_code(self.hypothesis_id)}`\n\n"
             f"# Method\n\n"
-            f"Role: `{self.role}` · Agent: `{self.agent_id}` · "
-            f"Worktree: `{self.worktree}` · Status: `{self.status}`\n\n"
+            f"Role: `{self.role}` · Agent: `{_escape_md_code(self.agent_id)}` · "
+            f"Worktree: `{_escape_md_code(self.worktree)}` · Status: `{self.status}`\n\n"
             f"# Discoveries\n\n"
             f"{_bullets(discoveries)}\n"
             f"# Null results\n\n"
@@ -193,7 +193,8 @@ class FindingsReport:
             f"# Evidence\n\n"
             f"{evidence_body}\n"
             f"# Attribution\n\n"
-            f"— {self.agent_id} ({self.role}) · worktree `{self.worktree}`\n"
+            f"— {_escape_md_inline(self.agent_id)} ({self.role}) · "
+            f"worktree `{_escape_md_code(self.worktree)}`\n"
         )
 
     @classmethod
@@ -320,10 +321,14 @@ def load_findings_pair(
         json_text = jpath.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
         raise FindingsValidationError(f"findings JSON is not valid UTF-8: {exc}") from exc
+    except OSError as exc:
+        raise FindingsValidationError(f"findings JSON unreadable: {exc}") from exc
     try:
         md_text = mpath.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
         raise FindingsValidationError(f"findings Markdown is not valid UTF-8: {exc}") from exc
+    except OSError as exc:
+        raise FindingsValidationError(f"findings Markdown unreadable: {exc}") from exc
     report = parse_findings_json(json_text)
     validate_findings_markdown(md_text)
     return report
@@ -334,14 +339,19 @@ def write_findings_pair(
     json_path: str | Path,
     markdown_path: str | Path,
 ) -> None:
-    """Write validated JSON + rendered Markdown for a report."""
+    """Write validated JSON + rendered Markdown for a report.
+
+    Both payloads are fully prepared and validated **before** any file is written,
+    so a validation failure never leaves a JSON-only half pair on disk.
+    """
     jpath = Path(json_path)
     mpath = Path(markdown_path)
-    jpath.parent.mkdir(parents=True, exist_ok=True)
-    mpath.parent.mkdir(parents=True, exist_ok=True)
-    jpath.write_text(report.to_json(), encoding="utf-8")
+    json_text = report.to_json()
     md = report.to_markdown()
     validate_findings_markdown(md)
+    jpath.parent.mkdir(parents=True, exist_ok=True)
+    mpath.parent.mkdir(parents=True, exist_ok=True)
+    jpath.write_text(json_text, encoding="utf-8")
     mpath.write_text(md, encoding="utf-8")
 
 
@@ -401,3 +411,20 @@ def _extract_headings_outside_code_blocks(text: str) -> set[str]:
 
 def _normalize_heading(text: str) -> str:
     return " ".join(text.strip().lower().split())
+
+
+def _escape_md_inline(text: str) -> str:
+    """Escape characters that break bold/list Markdown when embedding free text."""
+    return (
+        text.replace("\\", "\\\\")
+        .replace("*", "\\*")
+        .replace("_", "\\_")
+        .replace("`", "\\`")
+        .replace("[", "\\[")
+        .replace("]", "\\]")
+    )
+
+
+def _escape_md_code(text: str) -> str:
+    """Escape backticks inside inline code spans."""
+    return text.replace("`", "'")

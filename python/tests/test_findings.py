@@ -260,3 +260,39 @@ class TestFindingsPairIO:
         m.write_bytes(b"\xff\xfe# Invalid UTF-8")
         with pytest.raises(FindingsValidationError, match="not valid UTF-8"):
             load_findings_pair(j, m)
+
+
+class TestReviewFollowups:
+    def test_markdown_escapes_bold_in_summary(self) -> None:
+        report = _valid_report(
+            findings=(
+                Finding(
+                    type=FindingType.DISCOVERY,
+                    summary="uses **stars**",
+                    detail="and _under_",
+                ),
+            )
+        )
+        md = report.to_markdown()
+        assert r"\*\*stars\*\*" in md
+        assert r"\_under\_" in md
+        assert "uses **" not in md  # raw unescaped bold markers from summary must not appear
+
+    def test_write_pair_does_not_leave_json_if_md_invalid(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        report = _valid_report()
+        j = tmp_path / "findings.json"
+        m = tmp_path / "findings.md"
+
+        def boom(_text: str) -> None:
+            raise FindingsValidationError("forced md failure")
+
+        monkeypatch.setattr(
+            "worktrees_hives.findings.validate_findings_markdown",
+            boom,
+        )
+        with pytest.raises(FindingsValidationError, match="forced md failure"):
+            write_findings_pair(report, j, m)
+        assert not j.exists()
+        assert not m.exists()
