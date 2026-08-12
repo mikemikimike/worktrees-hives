@@ -42,12 +42,13 @@ _MERGE_TEXT_RE = re.compile(
     r"|/repos/[^/\s]+/[^/\s]+/merges?\b"
 )
 
-# git…push… with bare force remaining after stripping --force-with-lease.
-_GIT_PUSH_RE = re.compile(r"(?i)\bgit(?:\.exe)?\b[\s\S]*\bpush\b")
-_FORCE_WITH_LEASE_RE = re.compile(r"(?i)--force-with-lease(?:=\S+)?")
-# After --force-with-lease is stripped; allow trailing quote/punct (shell wrappers).
-_BARE_FORCE_RE = re.compile(
-    r"(?i)(?:^|[\s'\"])(?:--force(?![\w-])|(?<![\w-])-f(?![\w-])|-[A-Za-z]*f[A-Za-z]*)"
+# Shell -c payload: git … push … with any force form (free-form command path).
+_SHELL_C_RE = re.compile(
+    r"(?ix)\b(?:sh|bash|zsh|dash|ksh|fish)\b(?:\s+-[^\s]+)*\s+-c\s+(['\"])(.*?)\1"
+)
+_GIT_PUSH_FORCE_IN_PAYLOAD = re.compile(
+    r"(?ix)\bgit(?:\.exe)?\b(?:\s+\S+)*\s+push\b.*?"
+    r"(?:--force(?:-with-lease)?(?:=|\b)|(?<![\w-])-f\b|-[A-Za-z]*f[A-Za-z]*)"
 )
 
 
@@ -123,13 +124,19 @@ def _is_git_token(token: str) -> bool:
     return base in {"git", "git.exe"}
 
 
-def _is_bare_force_token(token: str) -> bool:
-    """True for bare force flags; False for ``--force-with-lease`` (allowed)."""
-    if token == "--force" or token.startswith("--force="):
+def _is_force_token(token: str) -> bool:
+    """True for any force-push flag in free-form ``--command`` (including lease).
+
+    ``--force-with-lease`` is only safe via Rust ``git-safe`` with branch checks;
+    bare free-form lab commands must not perform force pushes at all.
+    """
+    if token in {"--force", "--force-with-lease"} or token.startswith(
+        ("--force=", "--force-with-lease=")
+    ):
         return True
     if token == "-f":
         return True
-    # Combined short options: -fu, -ff, -vf, etc. (not --force-with-lease).
+    # Combined short options: -fu, -ff, -vf, etc.
     return token.startswith("-") and not token.startswith("--") and "f" in token[1:]
 
 
@@ -154,8 +161,8 @@ def _skip_git_global_options(argv: list[str], start: int) -> int:
     return j
 
 
-def _argv_has_bare_force_push(argv: list[str]) -> bool:
-    """Detect bare force-push in structured argv (path-qualified git ok)."""
+def _argv_has_force_push(argv: list[str]) -> bool:
+    """Detect force-push in structured argv (path-qualified git ok)."""
     i = 0
     while i < len(argv):
         if not _is_git_token(argv[i]):
@@ -164,22 +171,23 @@ def _argv_has_bare_force_push(argv: list[str]) -> bool:
         j = _skip_git_global_options(argv, i + 1)
         if j < len(argv) and argv[j] == "push":
             for opt in argv[j + 1 :]:
-                if _is_bare_force_token(opt):
+                if _is_force_token(opt):
                     return True
         i += 1
     return False
 
 
-def _text_has_bare_force_push(text: str) -> bool:
-    """Catch wrappers (sh -c 'git push -f') via text after stripping lease form."""
-    if not _GIT_PUSH_RE.search(text):
-        return False
-    cleaned = _FORCE_WITH_LEASE_RE.sub(" ", text)
-    return _BARE_FORCE_RE.search(cleaned) is not None
+def _shell_c_payloads_have_force_push(text: str) -> bool:
+    """Scan only ``sh -c '…'`` payloads (avoids cross-command false positives)."""
+    for match in _SHELL_C_RE.finditer(text):
+        payload = match.group(2)
+        if _GIT_PUSH_FORCE_IN_PAYLOAD.search(payload):
+            return True
+    return False
 
 
 def assert_command_allowed(command: str | Sequence[str]) -> None:
-    """Reject merge / bare force-push (never-merge). Raises :class:`PolicyError`."""
+    """Reject merge / force-push in free-form ``--command`` (never-merge)."""
     text = command if isinstance(command, str) else " ".join(command)
     if _MERGE_TEXT_RE.search(text):
         raise PolicyError(
@@ -188,11 +196,11 @@ def assert_command_allowed(command: str | Sequence[str]) -> None:
         )
 
     argv = _command_to_argv(command)
-    if _argv_has_bare_force_push(argv) or _text_has_bare_force_push(text):
+    if _argv_has_force_push(argv) or _shell_c_payloads_have_force_push(text):
         raise PolicyError(
-            "BARE_FORCE_PUSH",
-            "lab run --command refused: bare force-push is denied "
-            "(use --force-with-lease only when policy allows; never-merge path)",
+            "FORCE_PUSH",
+            "lab run --command refused: force-push is denied on free-form commands "
+            "(use Rust git-safe with expected-branch for controlled --force-with-lease)",
         )
 
 
@@ -291,11 +299,14 @@ def run_lab_unit(
             command_exit=command_exit,
             ok=True,
         )
-    except Exception:
+    except Exception as exc:
         if teardown_on_error:
-            note = _teardown_with_note(manager, job.job_id)
+            torn, note = _teardown_job(manager, job.job_id)
             if note:
-                raise LabRunError(note) from None
+                raise LabRunError(f"{exc}; {note}") from exc
+            if torn is not None:
+                # Prefer reporting torn-down state if we re-raise differently later.
+                _ = torn
         raise
 
 
@@ -304,29 +315,28 @@ def _maybe_teardown(
 ) -> LabRunResult:
     if not teardown_on_error or result.ok:
         return result
-    note = _teardown_with_note(manager, result.job.job_id)
-    if not note:
-        return result
+    torn, note = _teardown_job(manager, result.job.job_id)
+    job = torn if torn is not None else result.job
     msg = result.error_message or ""
-    combined = f"{msg}; {note}" if msg else note
+    if note:
+        msg = f"{msg}; {note}" if msg else note
     return LabRunResult(
-        job=result.job,
+        job=job,
         report=result.report,
         findings_json=result.findings_json,
         findings_md=result.findings_md,
         command_exit=result.command_exit,
         ok=False,
         error_code=result.error_code,
-        error_message=combined,
+        error_message=msg or None,
     )
 
 
-def _teardown_with_note(manager: LabJobManager, job_id: str) -> str | None:
+def _teardown_job(manager: LabJobManager, job_id: str) -> tuple[LabJob | None, str | None]:
     try:
-        manager.teardown(job_id, force=True)
+        return manager.teardown(job_id, force=True), None
     except LabJobError as exc:
-        return f"teardown failed: {exc}"
-    return None
+        return None, f"teardown failed: {exc}"
 
 
 def _assert_report_matches_job(report: FindingsReport, job: LabJob) -> None:
@@ -345,9 +355,15 @@ def _assert_report_matches_job(report: FindingsReport, job: LabJob) -> None:
             f"findings role {report.role!r} does not match job {job.role!r}"
         )
     if job.worktree_path:
-        report_wt = os.path.abspath(os.path.expanduser(report.worktree))
-        job_wt = os.path.abspath(os.path.expanduser(job.worktree_path))
+        report_wt = os.path.normcase(os.path.abspath(os.path.expanduser(report.worktree)))
+        job_wt = os.path.normcase(os.path.abspath(os.path.expanduser(job.worktree_path)))
         if report_wt != job_wt:
+            # Prefer samefile when both exist (symlink / Windows case aliases).
+            try:
+                if os.path.samefile(report.worktree, job.worktree_path):
+                    return
+            except OSError:
+                pass
             raise FindingsValidationError(
                 f"findings worktree {report_wt!r} does not match job {job_wt!r}"
             )
@@ -364,11 +380,11 @@ def _run_command(
     if not argv:
         raise LabRunError("lab run --command is empty")
 
-    # New session so timeout can kill the whole process group (POSIX).
+    # Discard output (secrets + memory); new session for process-group kill.
     popen_kwargs: dict[str, Any] = {
         "cwd": cwd,
-        "stdout": subprocess.PIPE,
-        "stderr": subprocess.PIPE,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
     }
     if os.name == "posix":
         popen_kwargs["start_new_session"] = True
@@ -379,15 +395,20 @@ def _run_command(
         raise LabRunError(f"lab run --command failed to start: {exc}") from exc
 
     try:
-        _stdout, _stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            _kill_process_tree(proc)
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=5)
+            raise LabRunError(f"lab run --command timed out after {timeout}s") from exc
+        return int(proc.returncode if proc.returncode is not None else -1)
+    except BaseException:
+        # Ctrl+C / unexpected exit: do not orphan the lab command.
         _kill_process_tree(proc)
         with contextlib.suppress(Exception):
-            proc.communicate(timeout=5)
-        raise LabRunError(f"lab run --command timed out after {timeout}s") from exc
-
-    # Discard output (may contain secrets); do not decode as text.
-    return int(proc.returncode if proc.returncode is not None else -1)
+            proc.wait(timeout=5)
+        raise
 
 
 def _kill_process_tree(proc: subprocess.Popen[Any]) -> None:
@@ -397,5 +418,13 @@ def _kill_process_tree(proc: subprocess.Popen[Any]) -> None:
         with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
             proc.kill()
         return
+    # Windows: kill process tree via taskkill when available.
+    with contextlib.suppress(Exception):
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            check=False,
+            capture_output=True,
+            timeout=10,
+        )
     with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
         proc.kill()

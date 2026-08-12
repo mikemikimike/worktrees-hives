@@ -619,6 +619,9 @@ def cmd_lab_run(args: argparse.Namespace) -> int:
                 command_timeout=args.command_timeout,
                 teardown_on_error=args.teardown_on_error,
             )
+        except PolicyError:
+            # Exit 2 via _guard (structured Rust/Python policy).
+            raise
         except LabRunError as e:
             return _fail("lab.run", "LAB_RUN_ERROR", str(e), as_json=as_json, exit_code=1)
         except LabJobError as e:
@@ -626,6 +629,9 @@ def cmd_lab_run(args: argparse.Namespace) -> int:
             # Owner allowlist / deny-by-default is policy (exit 2).
             if "allowlist" in msg.lower() or "deny-by-default" in msg.lower():
                 raise PolicyError("OWNER_NOT_ALLOWED", msg) from e
+            # Rust policy rejections wrapped as prose still map to exit 2.
+            if "wh policy rejection" in msg.lower():
+                raise PolicyError("WH_POLICY", msg) from e
             return _fail("lab.run", "LAB_JOB_ERROR", msg, as_json=as_json, exit_code=1)
         except FindingsValidationError as e:
             return _fail("lab.run", "FINDINGS_INVALID", str(e), as_json=as_json, exit_code=1)

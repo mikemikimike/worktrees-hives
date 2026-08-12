@@ -129,13 +129,23 @@ class WhClient:
         self._wh_path = wh_path
         self._timeout = timeout
 
-    def run(self, *args: str) -> SuccessResponse | ErrorResponse:
+    def run(
+        self,
+        *args: str,
+        env: dict[str, str] | None = None,
+    ) -> SuccessResponse | ErrorResponse:
         """Invoke ``wh --json <args>`` and return a typed response envelope.
 
         ``git-safe`` / ``gh-safe`` map the *child* exit code onto the process
         exit while still writing an ``ok: true`` envelope with
         ``data.exit_code``. Machine clients must read that envelope rather than
         treating a non-zero process exit as a bridge failure.
+
+        Parameters
+        ----------
+        env:
+            Optional environment overrides merged onto ``os.environ`` for this
+            subprocess only (does not mutate the parent process environment).
 
         Raises
         ------
@@ -152,6 +162,9 @@ class WhClient:
         """
         binary = _resolve_wh_binary(self._wh_path)
         cmd = [binary, "--json", *args]
+        run_env = None
+        if env is not None:
+            run_env = {**os.environ, **env}
 
         try:
             result = subprocess.run(
@@ -160,6 +173,7 @@ class WhClient:
                 text=True,
                 timeout=self._timeout,
                 check=False,
+                env=run_env,
             )
         except OSError as exc:
             raise WhBinaryNotFoundError(f"Failed to execute wh at {binary}: {exc}") from exc

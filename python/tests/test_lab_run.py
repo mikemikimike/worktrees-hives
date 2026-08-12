@@ -90,8 +90,14 @@ class TestNeverMerge:
         with pytest.raises(PolicyError, match=r"BARE_FORCE|force"):
             assert_command_allowed("sh -c 'git push origin main --force'")
 
-    def test_allows_force_with_lease(self) -> None:
-        assert_command_allowed(["git", "push", "--force-with-lease", "origin", "HEAD"])
+    def test_denies_force_with_lease_in_free_command(self) -> None:
+        # Free-form --command must not force-push; lease only via Rust git-safe.
+        with pytest.raises(PolicyError, match=r"FORCE_PUSH|force"):
+            assert_command_allowed(["git", "push", "--force-with-lease", "origin", "HEAD"])
+
+    def test_allows_unrelated_docker_force(self) -> None:
+        # Must not false-positive across unrelated push tools.
+        assert_command_allowed("apt-get install -y git && docker push --force myimg")
 
     def test_empty_command_skips_allocate(self) -> None:
         mgr = MagicMock()
@@ -288,7 +294,7 @@ class TestCliLabRun:
         assert code == 2
         env = json.loads(capsys.readouterr().out)
         assert env["ok"] is False
-        assert env["error"]["code"] in {"NEVER_MERGE", "BARE_FORCE_PUSH"}
+        assert env["error"]["code"] in {"NEVER_MERGE", "FORCE_PUSH", "BARE_FORCE_PUSH"}
 
     def test_json_envelope_findings_failure(self, tmp_path: Path, monkeypatch, capsys) -> None:
         job = _job(str(tmp_path / "wt"))
