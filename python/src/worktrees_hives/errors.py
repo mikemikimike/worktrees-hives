@@ -50,3 +50,11 @@ class PolicyError(WhError):
         self.code = code
         self.message = message
         super().__init__(f"Policy violation [{code}]: {message}")
+
+
+class FindingsValidationError(WhError):
+    """Raised when a lab findings report (JSON and/or Markdown) is invalid."""
+
+    def __init__(self, detail: str) -> None:
+        self.detail = detail
+        super().__init__(f"Invalid findings report: {detail}")

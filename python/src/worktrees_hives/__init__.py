@@ -46,12 +46,27 @@ from worktrees_hives.claim import (
 )
 from worktrees_hives.contract import ErrorResponse, Response, SuccessResponse
 from worktrees_hives.errors import (
+    FindingsValidationError,
     PolicyError,
     WhBinaryNotFoundError,
     WhError,
     WhJsonDecodeError,
     WhProcessError,
     WhSchemaError,
+)
+from worktrees_hives.findings import (
+    FINDINGS_SCHEMA_VERSION,
+    REQUIRED_MD_SECTIONS,
+    AgentRole,
+    Finding,
+    FindingsReport,
+    FindingType,
+    ReportStatus,
+    empty_findings_markdown_template,
+    load_findings_pair,
+    parse_findings_json,
+    validate_findings_markdown,
+    write_findings_pair,
 )
 from worktrees_hives.issue_to_pr import (
     IssueToPr,
@@ -82,6 +97,9 @@ from worktrees_hives.stacks import PRState as StackPRState
 
 __all__ = [
     "DEFAULT_ALLOWED_OWNERS",
+    "FINDINGS_SCHEMA_VERSION",
+    "REQUIRED_MD_SECTIONS",
+    "AgentRole",
     "AttributionConfig",
     "AttributionPlacement",
     "BabysitCycle",
@@ -97,6 +115,10 @@ __all__ = [
     "ClassificationReport",
     "ClassifiedCheck",
     "ErrorResponse",
+    "Finding",
+    "FindingType",
+    "FindingsReport",
+    "FindingsValidationError",
     "IsolationError",
     "IssueToPr",
     "IssueToPrConfig",
@@ -109,6 +131,7 @@ __all__ = [
     "Policy",
     "PolicyError",
     "ReplyTemplate",
+    "ReportStatus",
     "Response",
     "ReviewThread",
     "Stack",
@@ -132,13 +155,18 @@ __all__ = [
     "classify_check",
     "classify_checks",
     "classify_pr",
+    "empty_findings_markdown_template",
     "find_standalone_prs",
     "format_attribution",
     "format_reply",
     "load_allowed_owners_from_env",
+    "load_findings_pair",
     "order_prs_bottom_up",
     "parse_check_entry",
+    "parse_findings_json",
     "rerun_command",
     "resolve_allowed_owners",
     "should_rerun",
+    "validate_findings_markdown",
+    "write_findings_pair",
 ]
