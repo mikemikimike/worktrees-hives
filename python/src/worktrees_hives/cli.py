@@ -13,8 +13,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from worktrees_hives.babysit import DEFAULT_ATTRIBUTION, MAX_FIX_COMMITS_PER_CYCLE
+from worktrees_hives.bridge import WhClient
 from worktrees_hives.discover import OwnerPolicyError
-from worktrees_hives.errors import PolicyError
+from worktrees_hives.errors import FindingsValidationError, PolicyError
+from worktrees_hives.findings import AgentRole
+from worktrees_hives.lab_jobs import LabJobError, LabJobManager, LabJobStore
+from worktrees_hives.lab_run import LabRunError, run_lab_unit
 from worktrees_hives.watchlist import (
     CorruptStateError,
     JobState,
@@ -584,6 +588,78 @@ def cmd_babysit(args: argparse.Namespace) -> int:
     return _guard("babysit", as_json, run)
 
 
+def cmd_lab_run(args: argparse.Namespace) -> int:
+    """Handle ``lab run`` — single hypothesis unit (GH #80). Never merges."""
+    as_json = getattr(args, "json", False)
+    # dest must not be ``command`` — that name is the top-level subparser dest.
+    run_command = getattr(args, "run_command", None) or None
+
+    def run() -> int:
+        store = LabJobStore(args.lab_jobs_path) if args.lab_jobs_path else None
+        manager = LabJobManager(
+            WhClient(),
+            worktree_base=args.worktree_base,
+            repo_root=args.repo_root,
+            store=store,
+        )
+        try:
+            result = run_lab_unit(
+                manager,
+                owner=args.owner,
+                repo=args.repo,
+                hypothesis_id=args.hypothesis_id,
+                agent_id=args.agent_id,
+                role=args.role,
+                branch=args.branch,
+                job_id=args.job_id,
+                command=run_command,
+                command_timeout=args.command_timeout,
+                validate_findings=not args.skip_findings,
+                teardown_on_error=args.teardown_on_error,
+            )
+        except LabRunError as e:
+            return _fail("lab.run", "LAB_RUN_ERROR", str(e), as_json=as_json, exit_code=1)
+        except LabJobError as e:
+            return _fail("lab.run", "LAB_JOB_ERROR", str(e), as_json=as_json, exit_code=1)
+        except FindingsValidationError as e:
+            return _fail("lab.run", "FINDINGS_INVALID", str(e), as_json=as_json, exit_code=1)
+
+        if as_json:
+            print(
+                json.dumps(
+                    _v1_envelope(
+                        "lab.run",
+                        result.to_dict(),
+                        ok=result.ok,
+                        error=(
+                            None
+                            if result.ok
+                            else {
+                                "code": result.error_code or "LAB_RUN_FAILED",
+                                "message": result.error_message or "lab run failed",
+                            }
+                        ),
+                    )
+                )
+            )
+        else:
+            job = result.job
+            print(
+                f"lab run job={job.job_id} hypothesis={job.hypothesis_id} "
+                f"path={job.worktree_path} ok={result.ok}"
+            )
+            if result.report is not None:
+                print(f"  findings status={result.report.status}")
+            if not result.ok:
+                print(
+                    f"  error: {result.error_code}: {result.error_message}",
+                    file=sys.stderr,
+                )
+        return 0 if result.ok else 1
+
+    return _guard("lab.run", as_json, run)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Main CLI entry point (worktrees-hives / wh-orch)."""
     parser = argparse.ArgumentParser(
@@ -721,6 +797,71 @@ def main(argv: list[str] | None = None) -> int:
         help=f"Attribution prefixed to review replies (default: {DEFAULT_ATTRIBUTION!r})",
     )
 
+    # lab (hypothesis lab — not babysit)
+    lab_p = sub.add_parser(
+        "lab",
+        help="Hypothesis lab (allocate worktrees, enforce findings; never merges)",
+    )
+    lab_sub = lab_p.add_subparsers(dest="lab_command", required=True)
+
+    run_p = lab_sub.add_parser(
+        "run",
+        help="Single hypothesis unit: allocate worktree + require findings pair",
+    )
+    run_p.add_argument("--owner", required=True, help="Repository owner (allowlisted)")
+    run_p.add_argument("--repo", required=True, help="Repository name")
+    run_p.add_argument(
+        "--hypothesis-id",
+        required=True,
+        help="Hypothesis identifier (maps to lab job / findings)",
+    )
+    run_p.add_argument("--agent-id", required=True, help="Agent or subagent id")
+    run_p.add_argument(
+        "--role",
+        choices=[r.value for r in AgentRole],
+        default=AgentRole.AGENT.value,
+        help="agent or subagent (default: agent)",
+    )
+    run_p.add_argument("--branch", help="Branch for the lab worktree (default: lab/<hypothesis>)")
+    run_p.add_argument("--job-id", help="Explicit lab job id (default: lab-<hypothesis>)")
+    run_p.add_argument(
+        "--command",
+        dest="run_command",
+        help=(
+            "Optional command run inside the worktree after allocate "
+            "(argv via shlex; merge / bare force-push denied). "
+            "dest=run_command so it does not clobber the top-level subcommand dest."
+        ),
+    )
+    run_p.add_argument(
+        "--command-timeout",
+        type=float,
+        default=3600.0,
+        help="Seconds before --command is killed (default: 3600)",
+    )
+    run_p.add_argument(
+        "--skip-findings",
+        action="store_true",
+        help="Skip findings.json + findings.md validation (not recommended)",
+    )
+    run_p.add_argument(
+        "--teardown-on-error",
+        action="store_true",
+        help="Tear down the lab job if command or findings validation fails",
+    )
+    run_p.add_argument(
+        "--worktree-base",
+        help="Override WH_WORKTREE_BASE for path layout",
+    )
+    run_p.add_argument(
+        "--repo-root",
+        help="Local git root for wh worktree create (default: cwd)",
+    )
+    run_p.add_argument(
+        "--lab-jobs-path",
+        help="Override WH_LAB_JOBS_PATH store file",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "watchlist":
@@ -731,6 +872,12 @@ def main(argv: list[str] | None = None) -> int:
             "check": cmd_check,
         }
         return watchlist_handlers[args.wl_command](args)
+
+    if args.command == "lab":
+        lab_handlers = {
+            "run": cmd_lab_run,
+        }
+        return lab_handlers[args.lab_command](args)
 
     handlers = {
         "discover": cmd_discover,
