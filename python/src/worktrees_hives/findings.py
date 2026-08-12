@@ -12,9 +12,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any
 
 from worktrees_hives.errors import FindingsValidationError
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 # Findings report document schema (independent of the wh CLI envelope).
 FINDINGS_SCHEMA_VERSION: int = 1
@@ -142,7 +145,9 @@ class FindingsReport:
     def to_json(self, *, indent: int = 2) -> str:
         """Serialize as JSON text."""
         try:
-            return json.dumps(self.to_dict(), indent=indent, sort_keys=False, allow_nan=False) + "\n"
+            return (
+                json.dumps(self.to_dict(), indent=indent, sort_keys=False, allow_nan=False) + "\n"
+            )
         except ValueError as exc:
             raise FindingsValidationError(f"cannot serialize report to JSON: {exc}") from exc
 
@@ -250,7 +255,10 @@ class FindingsReport:
         budgets_raw = raw.get("budgets")
         if budgets_raw is not None and not isinstance(budgets_raw, dict):
             raise FindingsValidationError("budgets must be an object or omitted")
-        budgets = MappingProxyType(budgets_raw) if budgets_raw is not None else None
+        # Shallow-copy then freeze so callers cannot mutate report.budgets via the input dict.
+        budgets = (
+            MappingProxyType(dict(budgets_raw)) if budgets_raw is not None else None
+        )
 
         return cls(
             hypothesis_id=hypothesis_id,
