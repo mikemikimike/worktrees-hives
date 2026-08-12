@@ -256,9 +256,7 @@ class FindingsReport:
         if budgets_raw is not None and not isinstance(budgets_raw, dict):
             raise FindingsValidationError("budgets must be an object or omitted")
         # Shallow-copy then freeze so callers cannot mutate report.budgets via the input dict.
-        budgets = (
-            MappingProxyType(dict(budgets_raw)) if budgets_raw is not None else None
-        )
+        budgets = MappingProxyType(dict(budgets_raw)) if budgets_raw is not None else None
 
         return cls(
             hypothesis_id=hypothesis_id,
