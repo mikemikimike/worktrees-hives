@@ -75,10 +75,26 @@ class TestFindingsReportJson:
         with pytest.raises(FindingsValidationError, match="not valid JSON"):
             parse_findings_json("{not json")
 
+    def test_rejects_nan_in_json(self) -> None:
+        text = '{"hypothesis_id": "H-001", "budgets": {"value": NaN}}'
+        with pytest.raises(FindingsValidationError, match="non-finite number"):
+            parse_findings_json(text)
+
+    def test_rejects_infinity_in_json(self) -> None:
+        text = '{"hypothesis_id": "H-001", "budgets": {"value": Infinity}}'
+        with pytest.raises(FindingsValidationError, match="non-finite number"):
+            parse_findings_json(text)
+
+    def test_rejects_negative_infinity_in_json(self) -> None:
+        text = '{"hypothesis_id": "H-001", "budgets": {"value": -Infinity}}'
+        with pytest.raises(FindingsValidationError, match="non-finite number"):
+            parse_findings_json(text)
+
     def test_rejects_missing_required_fields(self) -> None:
         with pytest.raises(FindingsValidationError, match="hypothesis_id"):
             FindingsReport.from_dict(
                 {
+                    "schema_version": FINDINGS_SCHEMA_VERSION,
                     "agent_id": "a",
                     "role": "agent",
                     "worktree": "/w",
@@ -106,6 +122,12 @@ class TestFindingsReportJson:
         with pytest.raises(FindingsValidationError, match="findings is required"):
             FindingsReport.from_dict(raw)
 
+    def test_rejects_missing_schema_version(self) -> None:
+        raw = _valid_report().to_dict()
+        del raw["schema_version"]
+        with pytest.raises(FindingsValidationError, match="schema_version is required"):
+            FindingsReport.from_dict(raw)
+
     def test_rejects_unsupported_schema_version(self) -> None:
         raw = _valid_report().to_dict()
         raw["schema_version"] = 99
@@ -118,6 +140,24 @@ class TestFindingsReportJson:
         assert "budgets" not in d
         again = FindingsReport.from_dict(d)
         assert again.budgets is None
+
+    def test_budgets_immutable_after_construction(self) -> None:
+        """Mutating the input dict or output dict should not affect the report."""
+        input_budgets = {"max_fix_commits": 3, "tokens": 1000}
+        raw_dict = _valid_report().to_dict()
+        raw_dict["budgets"] = input_budgets
+
+        report = FindingsReport.from_dict(raw_dict)
+        original_json = report.to_json()
+
+        # Mutate the input dict
+        input_budgets["max_fix_commits"] = 999
+        assert report.to_json() == original_json
+
+        # Mutate a dict returned by to_dict()
+        output_dict = report.to_dict()
+        output_dict["budgets"]["tokens"] = 9999  # type: ignore[index]
+        assert report.to_json() == original_json
 
 
 class TestFindingsMarkdown:
@@ -141,6 +181,34 @@ class TestFindingsMarkdown:
         md = "# Hypothesis\n\nx\n\n# Method\n\ny\n"
         with pytest.raises(FindingsValidationError, match="missing required sections"):
             validate_findings_markdown(md)
+
+    def test_ignores_headings_in_fenced_code_blocks(self) -> None:
+        """Headings inside fenced code blocks should not count."""
+        md = (
+            "# Hypothesis\n\ntest\n\n"
+            "# Method\n\ntest\n\n"
+            "```\n# Discoveries\n# Null results\n```\n\n"
+            "# Errors\n\ntest\n\n"
+            "# Evidence\n\ntest\n\n"
+            "# Attribution\n\ntest\n"
+        )
+        # Should fail because Discoveries and Null results are only in code blocks
+        with pytest.raises(FindingsValidationError, match="missing required sections"):
+            validate_findings_markdown(md)
+
+    def test_headings_with_trailing_hashes(self) -> None:
+        """ATX headings with optional closing hashes should be recognized."""
+        md = (
+            "# Hypothesis #\n\ntest\n\n"
+            "# Method ##\n\ntest\n\n"
+            "# Discoveries ###\n\ntest\n\n"
+            "# Null results\n\ntest\n\n"
+            "# Errors #####\n\ntest\n\n"
+            "# Evidence\n\ntest\n\n"
+            "# Attribution #\n\ntest\n"
+        )
+        # Should pass - all required sections are present with valid ATX closing
+        validate_findings_markdown(md)
 
 
 class TestFindingsPairIO:
@@ -173,4 +241,22 @@ class TestFindingsPairIO:
         j.write_text(_valid_report().to_json(), encoding="utf-8")
         m.write_text("# Only Hypothesis\n\nhi\n", encoding="utf-8")
         with pytest.raises(FindingsValidationError, match="Markdown"):
+            load_findings_pair(j, m)
+
+    def test_load_fails_on_invalid_utf8_in_json(self, tmp_path: Path) -> None:
+        j = tmp_path / "findings.json"
+        m = tmp_path / "findings.md"
+        # Write invalid UTF-8 bytes
+        j.write_bytes(b"\xff\xfe{invalid utf-8}")
+        m.write_text(empty_findings_markdown_template(), encoding="utf-8")
+        with pytest.raises(FindingsValidationError, match="not valid UTF-8"):
+            load_findings_pair(j, m)
+
+    def test_load_fails_on_invalid_utf8_in_markdown(self, tmp_path: Path) -> None:
+        j = tmp_path / "findings.json"
+        m = tmp_path / "findings.md"
+        j.write_text(_valid_report().to_json(), encoding="utf-8")
+        # Write invalid UTF-8 bytes
+        m.write_bytes(b"\xff\xfe# Invalid UTF-8")
+        with pytest.raises(FindingsValidationError, match="not valid UTF-8"):
             load_findings_pair(j, m)

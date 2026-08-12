@@ -11,7 +11,8 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Mapping
 
 from worktrees_hives.errors import FindingsValidationError
 
@@ -30,6 +31,7 @@ REQUIRED_MD_SECTIONS: tuple[str, ...] = (
 )
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
+_FENCE_RE = re.compile(r"^(```|~~~)", re.MULTILINE)
 
 
 class FindingType(StrEnum):
@@ -118,7 +120,7 @@ class FindingsReport:
     status: ReportStatus
     findings: tuple[Finding, ...] = ()
     artifacts: tuple[str, ...] = ()
-    budgets: dict[str, Any] | None = None
+    budgets: Mapping[str, Any] | None = None
     schema_version: int = FINDINGS_SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -134,12 +136,15 @@ class FindingsReport:
             "artifacts": list(self.artifacts),
         }
         if self.budgets is not None:
-            out["budgets"] = self.budgets
+            out["budgets"] = dict(self.budgets)
         return out
 
     def to_json(self, *, indent: int = 2) -> str:
         """Serialize as JSON text."""
-        return json.dumps(self.to_dict(), indent=indent, sort_keys=False) + "\n"
+        try:
+            return json.dumps(self.to_dict(), indent=indent, sort_keys=False, allow_nan=False) + "\n"
+        except ValueError as exc:
+            raise FindingsValidationError(f"cannot serialize report to JSON: {exc}") from exc
 
     def to_markdown(self) -> str:
         """Render the canonical Markdown template filled from this report."""
@@ -192,7 +197,10 @@ class FindingsReport:
         if not isinstance(raw, dict):
             raise FindingsValidationError(f"report must be an object, got {type(raw).__name__}")
 
-        schema_version = raw.get("schema_version", FINDINGS_SCHEMA_VERSION)
+        _SCHEMA_VERSION_SENTINEL = object()
+        schema_version = raw.get("schema_version", _SCHEMA_VERSION_SENTINEL)
+        if schema_version is _SCHEMA_VERSION_SENTINEL:
+            raise FindingsValidationError("schema_version is required")
         if not isinstance(schema_version, int) or isinstance(schema_version, bool):
             raise FindingsValidationError("schema_version must be an int")
         if schema_version != FINDINGS_SCHEMA_VERSION:
@@ -239,9 +247,10 @@ class FindingsReport:
         ):
             raise FindingsValidationError("artifacts must be a list of strings")
 
-        budgets = raw.get("budgets")
-        if budgets is not None and not isinstance(budgets, dict):
+        budgets_raw = raw.get("budgets")
+        if budgets_raw is not None and not isinstance(budgets_raw, dict):
             raise FindingsValidationError("budgets must be an object or omitted")
+        budgets = MappingProxyType(budgets_raw) if budgets_raw is not None else None
 
         return cls(
             hypothesis_id=hypothesis_id,
@@ -260,10 +269,16 @@ def parse_findings_json(text: str) -> FindingsReport:
     """Decode JSON text into a validated :class:`FindingsReport`."""
     if not text or not text.strip():
         raise FindingsValidationError("findings JSON is empty")
+
+    def _reject_non_finite(value: str) -> float:
+        raise FindingsValidationError(f"findings JSON contains non-finite number: {value}")
+
     try:
-        raw = json.loads(text)
+        raw = json.loads(text, parse_constant=_reject_non_finite)
     except json.JSONDecodeError as exc:
         raise FindingsValidationError(f"findings JSON is not valid JSON: {exc}") from exc
+    except FindingsValidationError:
+        raise
     if not isinstance(raw, dict):
         raise FindingsValidationError("findings JSON root must be an object")
     return FindingsReport.from_dict(raw)
@@ -273,7 +288,7 @@ def validate_findings_markdown(text: str) -> None:
     """Fail closed if Markdown is missing required section headings."""
     if not text or not text.strip():
         raise FindingsValidationError("findings Markdown is empty")
-    headings = {_normalize_heading(m.group(2)) for m in _HEADING_RE.finditer(text)}
+    headings = _extract_headings_outside_code_blocks(text)
     missing = [s for s in REQUIRED_MD_SECTIONS if _normalize_heading(s) not in headings]
     if missing:
         raise FindingsValidationError(
@@ -295,8 +310,16 @@ def load_findings_pair(
         raise FindingsValidationError(f"findings JSON missing: {jpath}")
     if not mpath.is_file():
         raise FindingsValidationError(f"findings Markdown missing: {mpath}")
-    report = parse_findings_json(jpath.read_text(encoding="utf-8"))
-    validate_findings_markdown(mpath.read_text(encoding="utf-8"))
+    try:
+        json_text = jpath.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise FindingsValidationError(f"findings JSON is not valid UTF-8: {exc}") from exc
+    try:
+        md_text = mpath.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise FindingsValidationError(f"findings Markdown is not valid UTF-8: {exc}") from exc
+    report = parse_findings_json(json_text)
+    validate_findings_markdown(md_text)
     return report
 
 
@@ -327,6 +350,47 @@ def _require_nonempty_str(raw: dict[str, Any], key: str) -> str:
     if not isinstance(val, str) or not val.strip():
         raise FindingsValidationError(f"{key} is required non-empty string")
     return val.strip()
+
+
+def _extract_headings_outside_code_blocks(text: str) -> set[str]:
+    """Extract normalized ATX headings, ignoring those inside fenced code blocks."""
+    # Find all fence positions
+    fences = list(_FENCE_RE.finditer(text))
+    code_block_ranges: list[tuple[int, int]] = []
+
+    # Pair up fences to find code block ranges
+    i = 0
+    while i < len(fences):
+        start_fence = fences[i]
+        start_pos = start_fence.start()
+        fence_type = start_fence.group(1)[:3]  # ``` or ~~~
+
+        # Find matching closing fence
+        j = i + 1
+        while j < len(fences):
+            if fences[j].group(1)[:3] == fence_type:
+                end_pos = fences[j].end()
+                code_block_ranges.append((start_pos, end_pos))
+                i = j + 1
+                break
+            j += 1
+        else:
+            # No closing fence found, treat rest of document as code block
+            code_block_ranges.append((start_pos, len(text)))
+            break
+
+    def _is_in_code_block(pos: int) -> bool:
+        return any(start <= pos < end for start, end in code_block_ranges)
+
+    headings: set[str] = set()
+    for match in _HEADING_RE.finditer(text):
+        if not _is_in_code_block(match.start()):
+            heading_text = match.group(2)
+            # Strip optional trailing hashes (ATX closing sequence)
+            heading_text = re.sub(r"\s*#+\s*$", "", heading_text)
+            headings.add(_normalize_heading(heading_text))
+
+    return headings
 
 
 def _normalize_heading(text: str) -> str:
