@@ -265,7 +265,6 @@ class TestRunLabUnit:
         assert result.report.status is ReportStatus.FAILED
 
 
-
 class TestCliLabRun:
     def test_help(self, capsys: pytest.CaptureFixture[str]) -> None:
         with pytest.raises(SystemExit) as exc:

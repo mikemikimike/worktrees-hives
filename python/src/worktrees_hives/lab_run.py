@@ -269,9 +269,7 @@ def run_lab_unit(
                     stale.unlink()
             command_started_at = time.time()
             try:
-                command_exit = _run_command(
-                    command, cwd=wt, timeout=float(command_timeout)
-                )
+                command_exit = _run_command(command, cwd=wt, timeout=float(command_timeout))
             except LabRunError as exc:
                 # Keep allocated job in the result for automation (timeouts, spawn errors).
                 result = LabRunResult(
@@ -310,8 +308,7 @@ def run_lab_unit(
                     ok=False,
                     error_code="COMMAND_FAILED",
                     error_message=(
-                        f"command exited {command_exit}; findings also invalid: "
-                        f"{findings_error}"
+                        f"command exited {command_exit}; findings also invalid: {findings_error}"
                     ),
                 )
             else:
@@ -410,9 +407,7 @@ def _assert_findings_fresh(jpath: Path, mpath: Path, started_at: float) -> None:
         except OSError as exc:
             raise FindingsValidationError(f"findings not refreshed after command: {path}") from exc
         if mtime < floor:
-            raise FindingsValidationError(
-                f"findings stale after command (not rewritten): {path}"
-            )
+            raise FindingsValidationError(f"findings stale after command (not rewritten): {path}")
 
 
 def _assert_report_matches_job(report: FindingsReport, job: LabJob) -> None:
