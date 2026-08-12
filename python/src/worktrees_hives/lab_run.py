@@ -57,7 +57,8 @@ _SHELL_C_RE = re.compile(
 )
 _GIT_PUSH_FORCE_IN_PAYLOAD = re.compile(
     r"(?ix)\bgit(?:\.exe)?\b(?:\s+\S+)*\s+push\b.*?"
-    r"(?:--force(?:-with-lease)?(?:=|\b)|(?<![\w-])-f\b|-[A-Za-z]*f[A-Za-z]*|\+\S+:\S*)"
+    r"(?:--force(?:-with-lease)?(?:=|\b)|--mirror\b|(?<![\w-])-f\b|"
+    r"-[A-Za-z]*f[A-Za-z]*|\+\S+:\S*)"
 )
 
 
@@ -138,8 +139,9 @@ def _is_force_token(token: str) -> bool:
 
     ``--force-with-lease`` is only safe via Rust ``git-safe`` with branch checks;
     bare free-form lab commands must not perform force pushes at all.
+    ``--mirror`` also overwrites remotes (forced update) and is denied here.
     """
-    if token in {"--force", "--force-with-lease"} or token.startswith(
+    if token in {"--force", "--force-with-lease", "--mirror"} or token.startswith(
         ("--force=", "--force-with-lease=")
     ):
         return True
@@ -191,6 +193,12 @@ def _argv_has_force_push(argv: list[str]) -> bool:
     return False
 
 
+def _is_git_alias_config_value(value: str) -> bool:
+    """True if ``-c`` value defines a git alias (keys are case-insensitive)."""
+    key = value.split("=", 1)[0].casefold()
+    return key.startswith("alias.")
+
+
 def _argv_has_git_alias_config(argv: list[str]) -> bool:
     """Reject free-form ``git -c alias.*=…`` (can expand to force-push)."""
     i = 0
@@ -202,11 +210,11 @@ def _argv_has_git_alias_config(argv: list[str]) -> bool:
         while j < len(argv):
             tok = argv[j]
             if tok == "-c" and j + 1 < len(argv):
-                if argv[j + 1].startswith("alias."):
+                if _is_git_alias_config_value(argv[j + 1]):
                     return True
                 j += 2
                 continue
-            if tok.startswith("-c") and "alias." in tok:
+            if tok.startswith("-c") and "alias." in tok.casefold():
                 return True
             break
         i += 1

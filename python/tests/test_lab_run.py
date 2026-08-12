@@ -92,6 +92,16 @@ class TestNeverMerge:
                 "git -c alias.overwrite='push --force' overwrite origin HEAD:main"
             )
 
+    def test_denies_git_c_alias_force_casefold(self) -> None:
+        with pytest.raises(PolicyError, match=r"FORCE_PUSH|force|alias"):
+            assert_command_allowed(
+                "git -c Alias.overwrite='push --force' overwrite origin HEAD:main"
+            )
+
+    def test_denies_git_push_mirror(self) -> None:
+        with pytest.raises(PolicyError, match=r"FORCE_PUSH|force|mirror"):
+            assert_command_allowed(["git", "push", "--mirror", "origin"])
+
     def test_allows_git_push_then_docker_f(self) -> None:
         # Shell-operator boundary: -f after && is not git force.
         assert_command_allowed("git push origin main && docker build -f Dockerfile .")
