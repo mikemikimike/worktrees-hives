@@ -85,6 +85,15 @@ from worktrees_hives.lab_jobs import (
     LabJobStore,
     default_lab_jobs_path,
 )
+from worktrees_hives.lab_run import (
+    FINDINGS_JSON_NAME,
+    FINDINGS_MD_NAME,
+    LabRunError,
+    LabRunResult,
+    assert_command_allowed,
+    findings_paths,
+    run_lab_unit,
+)
 from worktrees_hives.orchestrator import (
     Orchestrator,
     OrchestratorReport,
@@ -108,6 +117,8 @@ from worktrees_hives.stacks import PRState as StackPRState
 
 __all__ = [
     "DEFAULT_ALLOWED_OWNERS",
+    "FINDINGS_JSON_NAME",
+    "FINDINGS_MD_NAME",
     "FINDINGS_SCHEMA_VERSION",
     "LAB_JOBS_SCHEMA_VERSION",
     "REQUIRED_MD_SECTIONS",
@@ -143,6 +154,8 @@ __all__ = [
     "LabJobNotFoundError",
     "LabJobStatus",
     "LabJobStore",
+    "LabRunError",
+    "LabRunResult",
     "Orchestrator",
     "OrchestratorReport",
     "PRInfo",
@@ -170,6 +183,7 @@ __all__ = [
     "WorkerSpec",
     "WorkerStatus",
     "__version__",
+    "assert_command_allowed",
     "babysit_multiple",
     "classify_check",
     "classify_checks",
@@ -177,6 +191,7 @@ __all__ = [
     "default_lab_jobs_path",
     "empty_findings_markdown_template",
     "find_standalone_prs",
+    "findings_paths",
     "format_attribution",
     "format_reply",
     "load_allowed_owners_from_env",
@@ -186,6 +201,7 @@ __all__ = [
     "parse_findings_json",
     "rerun_command",
     "resolve_allowed_owners",
+    "run_lab_unit",
     "should_rerun",
     "validate_findings_markdown",
     "write_findings_pair",

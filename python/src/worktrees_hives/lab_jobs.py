@@ -607,15 +607,17 @@ class LabJobManager:
         raise LabJobError(f"wh worktree remove failed: {resp.error.code}: {resp.error.message}")
 
     def _wh_run(self, *args: str) -> SuccessResponse | ErrorResponse:
+        # Align Rust path derivation with this manager's worktree_base (per-call env).
         try:
-            return self.wh_client.run(*args)
+            return self.wh_client.run(*args, env={"WH_WORKTREE_BASE": self.worktree_base})
         except WhBinaryNotFoundError as exc:
             raise LabJobError(
                 "wh binary not found; install wh or set WH_BIN "
                 f"(lab jobs require Rust worktree CLI): {exc}"
             ) from exc
-        except PolicyError as exc:
-            raise LabJobError(f"wh policy rejection [{exc.code}]: {exc.message}") from exc
+        except PolicyError:
+            # Preserve structured policy + exit-code-2 semantics for the CLI.
+            raise
         except WhProcessError as exc:
             raise LabJobError(f"wh exited {exc.returncode}: {exc.stderr or 'no stderr'}") from exc
         except WhError as exc:

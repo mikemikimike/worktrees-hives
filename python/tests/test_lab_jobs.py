@@ -160,7 +160,7 @@ class TestAllocate:
     def test_same_hypothesis_auto_suffixes_job_id(self, tmp_path: Path) -> None:
         mgr, wh, _ = _manager(tmp_path)
 
-        def _side_effect(*args: str) -> SuccessResponse:
+        def _side_effect(*args: str, **_kwargs: object) -> SuccessResponse:
             jid = args[6]
             branch = args[7]
             path = os.path.join(str(tmp_path / "wt"), TEST_OWNER, TEST_REPO, jid)
@@ -214,7 +214,7 @@ class TestAllocate:
         p1 = os.path.join(str(tmp_path / "wt"), TEST_OWNER, TEST_REPO, "lab-A")
         p2 = os.path.join(str(tmp_path / "wt"), TEST_OWNER, TEST_REPO, "lab-B")
 
-        def _side_effect(*args: str) -> SuccessResponse:
+        def _side_effect(*args: str, **_kwargs: object) -> SuccessResponse:
             jid = args[6]
             path = p1 if jid == "lab-A" else p2
             return _ok_create(path=path, branch=f"lab/{jid}")
@@ -251,7 +251,7 @@ class TestAllocate:
 
         calls: list[tuple[str, ...]] = []
 
-        def _run(*args: str) -> SuccessResponse:
+        def _run(*args: str, **_kwargs: object) -> SuccessResponse:
             calls.append(args)
             if args[0:2] == ("worktree", "create"):
                 existing = store.get(jid)
