@@ -70,6 +70,10 @@ class TestNeverMerge:
         with pytest.raises(PolicyError, match=r"NEVER_MERGE|merge"):
             assert_command_allowed("gh pr merge 1 --squash")
 
+    def test_denies_gh_pr_merge_with_global_repo(self) -> None:
+        with pytest.raises(PolicyError, match=r"NEVER_MERGE|merge"):
+            assert_command_allowed("gh -R acme/repo pr merge 1")
+
     def test_denies_gh_api_merge_slashless(self) -> None:
         with pytest.raises(PolicyError, match=r"NEVER_MERGE|merge"):
             assert_command_allowed("gh api repos/acme/repo/merges -f base=main -f head=feature")
@@ -82,8 +86,18 @@ class TestNeverMerge:
         with pytest.raises(PolicyError, match=r"FORCE_PUSH|force"):
             assert_command_allowed(["git", "push", "origin", "+HEAD:main"])
 
+    def test_denies_git_c_alias_force(self) -> None:
+        with pytest.raises(PolicyError, match=r"FORCE_PUSH|force|alias"):
+            assert_command_allowed(
+                "git -c alias.overwrite='push --force' overwrite origin HEAD:main"
+            )
+
+    def test_allows_git_push_then_docker_f(self) -> None:
+        # Shell-operator boundary: -f after && is not git force.
+        assert_command_allowed("git push origin main && docker build -f Dockerfile .")
+
     def test_denies_force_after_refspec(self) -> None:
-        with pytest.raises(PolicyError, match=r"BARE_FORCE|force"):
+        with pytest.raises(PolicyError, match=r"BARE_FORCE|force|FORCE_PUSH"):
             assert_command_allowed(["git", "push", "origin", "main", "--force"])
 
     def test_denies_short_f_after_remote(self) -> None:
@@ -250,6 +264,7 @@ class TestRunLabUnit:
         script = (
             "from pathlib import Path\n"
             "import sys\n"
+            f"sys.path[:0] = {sys.path!r}\n"
             f"wt = Path({str(wt)!r})\n"
             "from worktrees_hives.findings import (\n"
             "  AgentRole, Finding, FindingsReport, FindingType, ReportStatus, write_findings_pair)\n"

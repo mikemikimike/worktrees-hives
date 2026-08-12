@@ -841,7 +841,9 @@ def main(argv: list[str] | None = None) -> int:
         dest="run_command",
         help=(
             "Optional command run inside the worktree after allocate "
-            "(argv via shlex; merge / bare force-push denied). "
+            "(shlex-split; no shell). Merge and all force-push forms denied "
+            "(including --force-with-lease and +refspec); use "
+            "wh git-safe --expected-branch for controlled lease pushes. "
             "dest=run_command so it does not clobber the top-level subcommand dest."
         ),
     )

@@ -8,8 +8,10 @@ bounded command inside the worktree, then require a valid findings pair
 Does **not** own batch fan-out (#83), aggregate tables (#16), findings schema
 (#82), or job-store internals (#85).
 
-**Never merges.** No merge APIs; optional ``--command`` is denylisted for
-``gh pr merge`` / GraphQL merge / bare force-push (``--force-with-lease`` ok).
+**Never merges.** Optional ``--command`` denylists merge APIs and **all**
+force-push forms (including ``--force-with-lease`` and ``+refspec``). Controlled
+lease pushes belong on Rust ``wh git-safe --expected-branch``, not free-form
+``--command``.
 """
 
 from __future__ import annotations
@@ -37,13 +39,17 @@ FINDINGS_MD_NAME = "findings.md"
 
 _MERGE_TEXT_RE = re.compile(
     r"(?ix)"
-    r"\bgh\s+pr\s+merge\b"
+    # Allow global flags between gh and pr (e.g. gh -R owner/repo pr merge).
+    r"\bgh\b(?:\s+\S+)*\s+pr\b(?:\s+\S+)*\s+merge\b"
     r"|\bmergePullRequest\b"
     # REST merge endpoints (with or without leading slash; gh api examples omit /)
     r"|/?repos/[^/\s]+/[^/\s]+/merges?\b"
     r"|/?repos/[^/\s]+/[^/\s]+/pulls/\d+/merge\b"
     r"|\bgh\s+api\b[^\n]*\brepos/[^/\s]+/[^/\s]+/(?:merges?|pulls/\d+/merge)\b"
 )
+
+# Stop force-flag scans at shell control operators (avoid `git push && docker -f`).
+_SHELL_SEPARATORS = frozenset({"&&", "||", ";", "|", "&"})
 
 # Shell -c payload: git … push … with any force form (free-form command path).
 _SHELL_C_RE = re.compile(
@@ -174,10 +180,62 @@ def _argv_has_force_push(argv: list[str]) -> bool:
         j = _skip_git_global_options(argv, i + 1)
         if j < len(argv) and argv[j] == "push":
             for opt in argv[j + 1 :]:
+                if opt in _SHELL_SEPARATORS:
+                    break
                 if _is_force_token(opt):
                     return True
                 # Force refspec: +src:dst (git-push(1)); not a flag (no leading --).
                 if opt.startswith("+") and not opt.startswith("--"):
+                    return True
+        i += 1
+    return False
+
+
+def _argv_has_git_alias_config(argv: list[str]) -> bool:
+    """Reject free-form ``git -c alias.*=…`` (can expand to force-push)."""
+    i = 0
+    while i < len(argv):
+        if not _is_git_token(argv[i]):
+            i += 1
+            continue
+        j = i + 1
+        while j < len(argv):
+            tok = argv[j]
+            if tok == "-c" and j + 1 < len(argv):
+                if argv[j + 1].startswith("alias."):
+                    return True
+                j += 2
+                continue
+            if tok.startswith("-c") and "alias." in tok:
+                return True
+            break
+        i += 1
+    return False
+
+
+def _argv_has_gh_pr_merge(argv: list[str]) -> bool:
+    """Detect ``gh [globals…] pr [flags…] merge`` (global flags between tokens)."""
+    i = 0
+    while i < len(argv):
+        base = os.path.basename(argv[i].rstrip("/\\")).casefold()
+        if base not in {"gh", "gh.exe"}:
+            i += 1
+            continue
+        j = i + 1
+        # Skip gh global options that take a value.
+        while j < len(argv) and argv[j].startswith("-"):
+            tok = argv[j]
+            if tok in {"-R", "--repo", "-c", "--hostname", "-h", "--help"} or tok.startswith(
+                ("--repo=", "--hostname=")
+            ):
+                j += 1 if "=" in tok else 2
+                continue
+            j += 1
+        if j < len(argv) and argv[j] == "pr":
+            for tok in argv[j + 1 :]:
+                if tok in _SHELL_SEPARATORS:
+                    break
+                if tok == "merge":
                     return True
         i += 1
     return False
@@ -195,18 +253,23 @@ def _shell_c_payloads_have_force_push(text: str) -> bool:
 def assert_command_allowed(command: str | Sequence[str]) -> None:
     """Reject merge / force-push in free-form ``--command`` (never-merge)."""
     text = command if isinstance(command, str) else " ".join(command)
-    if _MERGE_TEXT_RE.search(text):
+    argv = _command_to_argv(command)
+    if _MERGE_TEXT_RE.search(text) or _argv_has_gh_pr_merge(argv):
         raise PolicyError(
             "NEVER_MERGE",
             "lab run --command refused: merge operations are denied (never-merge policy)",
         )
 
-    argv = _command_to_argv(command)
-    if _argv_has_force_push(argv) or _shell_c_payloads_have_force_push(text):
+    if (
+        _argv_has_force_push(argv)
+        or _shell_c_payloads_have_force_push(text)
+        or _argv_has_git_alias_config(argv)
+    ):
         raise PolicyError(
             "FORCE_PUSH",
-            "lab run --command refused: force-push is denied on free-form commands "
-            "(use Rust git-safe with expected-branch for controlled --force-with-lease)",
+            "lab run --command refused: force-push (and git -c alias.* that can "
+            "expand to it) is denied on free-form commands "
+            "(use wh git-safe --expected-branch for controlled lease pushes)",
         )
 
 
@@ -347,14 +410,14 @@ def run_lab_unit(
             ok=True,
         )
     except Exception as exc:
-        if teardown_on_error:
-            torn, note = _teardown_job(manager, job.job_id)
-            if note:
-                raise LabRunError(f"{exc}; {note}") from exc
-            _ = torn
-        # Convert unexpected post-allocate errors into a failed result with job id.
+        # Known policy/lab errors: optional single teardown, then re-raise (no double).
         if isinstance(exc, (LabRunError, PolicyError, LabJobError, FindingsValidationError)):
+            if teardown_on_error:
+                _, note = _teardown_job(manager, job.job_id)
+                if note:
+                    raise LabRunError(f"{exc}; {note}") from exc
             raise
+        # Convert unexpected post-allocate errors into a failed result with job id.
         result = LabRunResult(
             job=job,
             report=None,
@@ -393,6 +456,9 @@ def _maybe_teardown(
 def _teardown_job(manager: LabJobManager, job_id: str) -> tuple[LabJob | None, str | None]:
     try:
         return manager.teardown(job_id, force=True), None
+    except PolicyError as exc:
+        # Keep original command/findings failure as primary (exit 1), note policy.
+        return None, f"teardown refused by policy: {exc.code}: {exc.message}"
     except LabJobError as exc:
         return None, f"teardown failed: {exc}"
 
@@ -465,30 +531,37 @@ def _run_command(
     except OSError as exc:
         raise LabRunError(f"lab run --command failed to start: {exc}") from exc
 
+    # Capture group id while the child is alive (pid reuse risk after wait).
+    pgid: int | None = None
+    if os.name == "posix":
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            pgid = os.getpgid(proc.pid)
+
     try:
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
-            _kill_process_tree(proc)
+            _kill_process_tree(proc, pgid=pgid)
             with contextlib.suppress(Exception):
                 proc.wait(timeout=5)
             raise LabRunError(f"lab run --command timed out after {timeout}s") from exc
         code = int(proc.returncode if proc.returncode is not None else -1)
-        # Reap descendants left behind by backgrounded children after launcher exit.
-        _kill_process_tree(proc)
+        # Reap descendants left in the session after launcher exit (use saved pgid).
+        _kill_process_tree(proc, pgid=pgid)
         return code
     except BaseException:
         # Ctrl+C / unexpected exit: do not orphan the lab command.
-        _kill_process_tree(proc)
+        _kill_process_tree(proc, pgid=pgid)
         with contextlib.suppress(Exception):
             proc.wait(timeout=5)
         raise
 
 
-def _kill_process_tree(proc: subprocess.Popen[Any]) -> None:
+def _kill_process_tree(proc: subprocess.Popen[Any], *, pgid: int | None = None) -> None:
     if os.name == "posix":
+        target = pgid if pgid is not None else proc.pid
         with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-            os.killpg(proc.pid, signal.SIGKILL)
+            os.killpg(target, signal.SIGKILL)
         with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
             proc.kill()
         return
