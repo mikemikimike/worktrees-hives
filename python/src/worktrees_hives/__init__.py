@@ -48,6 +48,7 @@ from worktrees_hives.contract import ErrorResponse, Response, SuccessResponse
 from worktrees_hives.errors import (
     FindingsValidationError,
     PolicyError,
+    ResearchValidationError,
     WhBinaryNotFoundError,
     WhError,
     WhJsonDecodeError,
@@ -101,6 +102,12 @@ from worktrees_hives.orchestrator import (
     WorkerSpec,
     WorkerStatus,
 )
+from worktrees_hives.research import (
+    RESEARCH_CONTRACT_SCHEMA_VERSION,
+    ResearchContract,
+    ResearchOutcome,
+    parse_research_json,
+)
 from worktrees_hives.stacks import (
     DEFAULT_ALLOWED_OWNERS,
     PRInfo,
@@ -122,6 +129,7 @@ __all__ = [
     "FINDINGS_SCHEMA_VERSION",
     "LAB_JOBS_SCHEMA_VERSION",
     "REQUIRED_MD_SECTIONS",
+    "RESEARCH_CONTRACT_SCHEMA_VERSION",
     "AgentRole",
     "AttributionConfig",
     "AttributionPlacement",
@@ -164,6 +172,9 @@ __all__ = [
     "PolicyError",
     "ReplyTemplate",
     "ReportStatus",
+    "ResearchContract",
+    "ResearchOutcome",
+    "ResearchValidationError",
     "Response",
     "ReviewThread",
     "Stack",
@@ -199,6 +210,7 @@ __all__ = [
     "order_prs_bottom_up",
     "parse_check_entry",
     "parse_findings_json",
+    "parse_research_json",
     "rerun_command",
     "resolve_allowed_owners",
     "run_lab_unit",

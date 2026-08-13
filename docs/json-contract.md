@@ -326,6 +326,61 @@ wh --json gh pr-view 42 --fields number,title,state --repo /path/to/repo
 }
 ```
 
+## Research contract domain document
+
+Research Hive experiment contracts are versioned Python domain documents. They
+reuse this envelope rather than defining another transport protocol. A lab
+command that carries a research contract places it at
+`data.research_contract`. The following abbreviated shape illustrates nesting
+only; `<command>` is a placeholder, and the shortened contract is not a valid
+standalone fixture:
+
+```json
+{
+  "ok": true,
+  "schema_version": 1,
+  "command": "lab.<command>",
+  "data": {
+    "research_contract": {
+      "schema_version": 1,
+      "research_id": "structured-contract-first-pass-evidence-v1",
+      "question": "Does a frozen contract improve first-pass evidence quality?",
+      "hypothesis": "The contract improves valid evidence within the token-cost bound."
+    }
+  },
+  "error": null
+}
+```
+
+The outer `schema_version` belongs to the Python/Rust transport envelope. The
+nested `data.research_contract.schema_version` belongs only to the research
+contract. The two versions evolve independently. GitHub #92 defines the nested
+document and does not add or change a CLI command.
+
+The canonical research-contract format is JSON. Within research-contract v1,
+optional fields (`null_hypothesis`, `resource_budget`, and `split_policy`) must
+be omitted when absent; an explicit JSON `null` is rejected as an invalid type.
+This differs from envelope fields such as `error`, which may use `null`. Unknown
+top-level fields are treated as future additive extensions: the Python parser
+validates that their values are finite, JSON-compatible data, freezes them with
+the rest of the contract, and re-emits them on serialization. It does not
+silently discard them. Removing or renaming a known field, changing a known
+field's type or meaning, or otherwise making a breaking domain change requires
+a research-contract version bump.
+
+`ResearchOutcome` reserves four first-class conclusions for later result
+documents: `supported`, `not_supported`, `inconclusive`, and `invalid`. An
+outcome is intentionally absent from the pre-execution `ResearchContract` so a
+result cannot be recorded as though it were known when acceptance criteria were
+frozen.
+
+The complete requiredness matrix and explicit non-goals are recorded in
+[`2026-08-12-research-contract-design.md`](superpowers/specs/2026-08-12-research-contract-design.md).
+The complete, validating
+[`research-contract-cloud-agent.json`](examples/research-contract-cloud-agent.json)
+fixture models a cloud coding-agent experiment; it does not model local GPU
+conditions.
+
 ## Compatibility Policy
 
 - **Additive changes** (new optional fields in `data`, new commands) are compatible within v1.
@@ -344,6 +399,7 @@ Example JSON files for testing are located in `docs/examples/`:
 - `state-add.json`
 - `git-run.json`
 - `error-policy.json`
+- `research-contract-cloud-agent.json`
 
 ## Python Validation
 
