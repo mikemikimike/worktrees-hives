@@ -358,10 +358,13 @@ contract. The two versions evolve independently. GitHub #92 defines the nested
 document and does not add or change a CLI command.
 
 The canonical research-contract format is JSON. Within research-contract v1,
-unknown top-level fields are treated as future additive extensions: the Python
-parser validates that their values are finite, JSON-compatible data, freezes
-them with the rest of the contract, and re-emits them on serialization. It does
-not silently discard them. Removing or renaming a known field, changing a known
+optional fields (`null_hypothesis`, `resource_budget`, and `split_policy`) must
+be omitted when absent; an explicit JSON `null` is rejected as an invalid type.
+This differs from envelope fields such as `error`, which may use `null`. Unknown
+top-level fields are treated as future additive extensions: the Python parser
+validates that their values are finite, JSON-compatible data, freezes them with
+the rest of the contract, and re-emits them on serialization. It does not
+silently discard them. Removing or renaming a known field, changing a known
 field's type or meaning, or otherwise making a breaking domain change requires
 a research-contract version bump.
 

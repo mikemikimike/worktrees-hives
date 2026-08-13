@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import FrozenInstanceError, fields, replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -208,6 +209,7 @@ class TestFailClosedValidation:
             ("dependent_metrics", ["valid", ""]),
             ("baselines", [42]),
             ("arms", "treatment"),
+            ("arms", ("treatment",)),
             ("acceptance_criteria", [None]),
             ("failure_criteria", ["   "]),
             ("artifact_expectations", {"path": "report.md"}),
@@ -221,6 +223,7 @@ class TestFailClosedValidation:
         ("name", "value"),
         [
             ("seed_policy", "random"),
+            ("seed_policy", MappingProxyType({})),
             ("resource_budget", []),
             ("split_policy", "by-session"),
         ],
@@ -234,6 +237,13 @@ class TestFailClosedValidation:
         with pytest.raises(ResearchValidationError, match="schema_version"):
             ResearchContract.from_dict(_valid_contract(schema_version=version))
 
+    def test_reports_unsupported_schema_before_v1_field_errors(self) -> None:
+        raw = _valid_contract(schema_version=2)
+        del raw["research_id"]
+
+        with pytest.raises(ResearchValidationError, match="unsupported schema_version 2"):
+            ResearchContract.from_dict(raw)
+
     @pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
     def test_rejects_non_finite_json_number(self, constant: str) -> None:
         raw = _valid_contract(resource_budget={"limit": "__NON_FINITE__"})
@@ -242,11 +252,25 @@ class TestFailClosedValidation:
         with pytest.raises(ResearchValidationError, match="non-finite number"):
             parse_research_json(text)
 
+    def test_rejects_overflow_number_literal(self) -> None:
+        raw = _valid_contract(resource_budget={"limit": "__OVERFLOW__"})
+        text = json.dumps(raw).replace('"__OVERFLOW__"', "1e400", 1)
+
+        with pytest.raises(ResearchValidationError, match="finite JSON number"):
+            parse_research_json(text)
+
     def test_rejects_nested_non_finite_number_from_dict(self) -> None:
         with pytest.raises(ResearchValidationError, match="finite JSON number"):
             ResearchContract.from_dict(
                 _valid_contract(resource_budget={"nested": {"limit": float("nan")}})
             )
+
+    def test_rejects_non_string_field_name(self) -> None:
+        raw = _valid_contract()
+        raw[1] = "numeric key"  # type: ignore[index]
+
+        with pytest.raises(ResearchValidationError, match="field names must be strings"):
+            ResearchContract.from_dict(raw)
 
     def test_rejects_non_json_additive_value(self) -> None:
         with pytest.raises(ResearchValidationError, match="unsupported JSON value"):

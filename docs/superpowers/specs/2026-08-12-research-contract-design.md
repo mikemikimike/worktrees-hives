@@ -67,7 +67,7 @@ Construction and parsing copy and freeze acceptance criteria along with all
 other collections. Callers cannot mutate a validated contract through either
 the source object or returned attributes. Later execution code must accept a
 validated contract before starting a run; implementing that sequence is outside
-#92.
+the scope of GitHub #92.
 
 ## Envelope compatibility and additive fields
 

@@ -41,6 +41,15 @@ _KNOWN_FIELDS: frozenset[str] = frozenset(
     (*_REQUIRED_FIELDS, "null_hypothesis", "resource_budget", "split_policy")
 )
 
+_STRING_COLLECTION_RULES: tuple[tuple[str, bool], ...] = (
+    ("dependent_metrics", True),
+    ("baselines", False),
+    ("arms", False),
+    ("acceptance_criteria", True),
+    ("failure_criteria", False),
+    ("artifact_expectations", False),
+)
+
 
 class ResearchOutcome(StrEnum):
     """Allowed conclusions for a later Research Hive result document."""
@@ -76,13 +85,7 @@ class ResearchContract:
 
     def __post_init__(self) -> None:
         """Validate direct construction and defensively freeze all collections."""
-        if type(self.schema_version) is not int:
-            raise ResearchValidationError("schema_version must be an int")
-        if self.schema_version != RESEARCH_CONTRACT_SCHEMA_VERSION:
-            raise ResearchValidationError(
-                f"unsupported schema_version {self.schema_version} "
-                f"(expected {RESEARCH_CONTRACT_SCHEMA_VERSION})"
-            )
+        _validate_schema_version(self.schema_version)
 
         for name in (
             "research_id",
@@ -97,15 +100,7 @@ class ResearchContract:
         if self.null_hypothesis is not None and not isinstance(self.null_hypothesis, str):
             raise ResearchValidationError("null_hypothesis must be a string or omitted")
 
-        collection_rules = (
-            ("dependent_metrics", True),
-            ("baselines", False),
-            ("arms", False),
-            ("acceptance_criteria", True),
-            ("failure_criteria", False),
-            ("artifact_expectations", False),
-        )
-        for name, require_nonempty in collection_rules:
+        for name, require_nonempty in _STRING_COLLECTION_RULES:
             object.__setattr__(
                 self,
                 name,
@@ -193,9 +188,17 @@ class ResearchContract:
         if not all(isinstance(name, str) for name in raw):
             raise ResearchValidationError("contract field names must be strings")
 
+        if "schema_version" not in raw:
+            raise ResearchValidationError("schema_version is required")
+        _validate_schema_version(raw["schema_version"])
+
         for name in _REQUIRED_FIELDS:
             if name not in raw:
                 raise ResearchValidationError(f"{name} is required")
+
+        for name, _require_nonempty in _STRING_COLLECTION_RULES:
+            if not isinstance(raw[name], list):
+                raise ResearchValidationError(f"{name} must be an array of non-empty strings")
 
         null_hypothesis: str | None = None
         if "null_hypothesis" in raw:
@@ -210,30 +213,22 @@ class ResearchContract:
 
         return cls(
             schema_version=raw["schema_version"],
-            research_id=_require_nonempty_string(raw["research_id"], "research_id"),
-            question=_require_nonempty_string(raw["question"], "question"),
-            hypothesis=_require_nonempty_string(raw["hypothesis"], "hypothesis"),
+            research_id=raw["research_id"],
+            question=raw["question"],
+            hypothesis=raw["hypothesis"],
             null_hypothesis=null_hypothesis,
-            independent_variable=_require_nonempty_string(
-                raw["independent_variable"], "independent_variable"
-            ),
-            dependent_metrics=_require_string_list(
-                raw["dependent_metrics"], "dependent_metrics", require_nonempty=True
-            ),
-            baselines=_require_string_list(raw["baselines"], "baselines"),
-            arms=_require_string_list(raw["arms"], "arms"),
-            acceptance_criteria=_require_string_list(
-                raw["acceptance_criteria"], "acceptance_criteria", require_nonempty=True
-            ),
-            failure_criteria=_require_string_list(raw["failure_criteria"], "failure_criteria"),
+            independent_variable=raw["independent_variable"],
+            dependent_metrics=raw["dependent_metrics"],
+            baselines=raw["baselines"],
+            arms=raw["arms"],
+            acceptance_criteria=raw["acceptance_criteria"],
+            failure_criteria=raw["failure_criteria"],
             resource_budget=resource_budget,
             seed_policy=_require_json_object(raw["seed_policy"], "seed_policy"),
             split_policy=split_policy,
-            repo=_require_nonempty_string(raw["repo"], "repo"),
-            ref=_require_nonempty_string(raw["ref"], "ref"),
-            artifact_expectations=_require_string_list(
-                raw["artifact_expectations"], "artifact_expectations"
-            ),
+            repo=raw["repo"],
+            ref=raw["ref"],
+            artifact_expectations=raw["artifact_expectations"],
             extensions=extensions,
         )
 
@@ -257,6 +252,15 @@ def parse_research_json(text: str) -> ResearchContract:
     return ResearchContract.from_dict(raw)
 
 
+def _validate_schema_version(value: object) -> None:
+    if type(value) is not int:
+        raise ResearchValidationError("schema_version must be an int")
+    if value != RESEARCH_CONTRACT_SCHEMA_VERSION:
+        raise ResearchValidationError(
+            f"unsupported schema_version {value} (expected {RESEARCH_CONTRACT_SCHEMA_VERSION})"
+        )
+
+
 def _require_nonempty_string(value: object, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ResearchValidationError(f"{name} is required and must be a non-empty string")
@@ -278,27 +282,16 @@ def _freeze_string_array(
     return tuple(value)
 
 
-def _require_string_list(
-    value: object,
-    name: str,
-    *,
-    require_nonempty: bool = False,
-) -> tuple[str, ...]:
-    if not isinstance(value, list):
-        raise ResearchValidationError(f"{name} must be an array of non-empty strings")
-    return _freeze_string_array(value, name, require_nonempty=require_nonempty)
-
-
-def _require_json_object(value: object, name: str) -> Mapping[str, object]:
+def _require_json_object(value: object, name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ResearchValidationError(f"{name} must be a JSON object")
-    return _freeze_json_object(value, name)
+    return value
 
 
 def _optional_json_object(
     raw: dict[str, Any],
     name: str,
-) -> Mapping[str, object] | None:
+) -> dict[str, Any] | None:
     if name not in raw:
         return None
     return _require_json_object(raw[name], name)
