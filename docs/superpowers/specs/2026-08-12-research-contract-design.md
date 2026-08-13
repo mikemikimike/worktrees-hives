@@ -72,7 +72,8 @@ validated contract before starting a run; implementing that sequence is outside
 ## Envelope compatibility and additive fields
 
 The research contract is a nested domain document, not a second transport
-protocol:
+protocol. This abbreviated shape illustrates placement only; the nested object
+omits required fields and is not a complete contract fixture:
 
 ```json
 {
@@ -82,7 +83,7 @@ protocol:
   "data": {
     "research_contract": {
       "schema_version": 1,
-      "research_id": "gpu-thermal-warning-v1"
+      "research_id": "structured-contract-first-pass-evidence-v1"
     }
   },
   "error": null
@@ -101,10 +102,13 @@ known field meaning or type require a research-contract version bump.
 
 ## Fixture and tests
 
-Add a realistic JSON fixture for a GPU thermal-pressure warning experiment. It
-will include multiple baselines and arms, recall and false-positive metrics,
-explicit criteria, compute/time budgets, deterministic seeds, session splits,
-a repository ref, and expected artifacts.
+Add a realistic JSON fixture for a cloud coding-agent experiment. It tests
+whether a frozen, structured pre-execution contract improves first-pass
+evidence quality over issue text alone, without an unacceptable token-cost
+increase. It includes a baseline and treatment arm, quality and cost metrics,
+explicit criteria, run/time/token budgets, deterministic seeds, task splits, a
+repository ref, and expected artifacts. It does not model local GPU thermals,
+because the agents under study are cloud-hosted models.
 
 Focused unit tests cover:
 

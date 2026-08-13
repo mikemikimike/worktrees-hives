@@ -58,3 +58,11 @@ class FindingsValidationError(WhError):
     def __init__(self, detail: str) -> None:
         self.detail = detail
         super().__init__(f"Invalid findings report: {detail}")
+
+
+class ResearchValidationError(WhError):
+    """Raised when a Research Hive experiment contract is invalid."""
+
+    def __init__(self, detail: str) -> None:
+        self.detail = detail
+        super().__init__(f"Invalid research contract: {detail}")
