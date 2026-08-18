@@ -563,6 +563,15 @@ def _skip_git_global_options(argv: list[str], start: int) -> int:
     return index
 
 
+def _option_takes_value(token: str, value_options: frozenset[str]) -> bool:
+    """True for a value-taking flag or a unique long-option prefix (argparse allow_abbrev)."""
+    if token in value_options:
+        return True
+    if not token.startswith("--") or token == "--" or "=" in token:
+        return False
+    return sum(1 for option in value_options if option.startswith(token)) == 1
+
+
 def _skip_leading_options(argv: list[str], start: int, *, value_options: frozenset[str]) -> int:
     """Advance past leading flags, including those that consume a following argument."""
     index = start
@@ -570,7 +579,7 @@ def _skip_leading_options(argv: list[str], start: int, *, value_options: frozens
         token = argv[index]
         if not token.startswith("-"):
             break
-        if token in value_options:
+        if _option_takes_value(token, value_options):
             index += 2
             continue
         if token.startswith("--") and "=" in token:

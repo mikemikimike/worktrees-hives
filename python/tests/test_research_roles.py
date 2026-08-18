@@ -234,10 +234,16 @@ class TestCapabilityEnforcement:
         assert_role_command_allowed(v0_role("experiment_agent"), ["git", "commit", "-m", "x"])
 
     def test_verifier_cannot_launch_lab(self) -> None:
+        role = v0_role("verification_agent")
         with pytest.raises(RoleCapabilityError, match="launch_experiments"):
             assert_role_command_allowed(
-                v0_role("verification_agent"),
+                role,
                 ["worktrees-hives", "lab", "run", "--hypothesis-id", "h1"],
+            )
+        with pytest.raises(RoleCapabilityError, match="launch_experiments"):
+            assert_role_command_allowed(
+                role,
+                ["worktrees-hives", "--s", "/tmp/x", "lab", "run"],
             )
 
     def test_merge_still_denied_by_lab_policy(self) -> None:
@@ -280,6 +286,8 @@ class TestCapabilityEnforcement:
         assert classify_command(["lab", "run"]) == launch
         assert classify_command(["worktrees-hives", "--json", "lab", "run"]) == launch
         assert classify_command(["wh-orch", "--state", "/tmp/lab", "lab", "run"]) == launch
+        assert classify_command(["worktrees-hives", "--s", "/tmp/x", "lab", "run"]) == launch
+        assert classify_command(["wh-orch", "--sta", "/tmp/x", "lab", "run"]) == launch
         assert classify_command(["worktrees-hives", "plan", "--repo", "org/lab"]) == frozenset()
         assert (
             classify_command(
