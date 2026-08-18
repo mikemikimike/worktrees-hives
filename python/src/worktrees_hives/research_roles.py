@@ -1,7 +1,7 @@
-"""Versioned Research Hive role and capability contract (GitHub #93).
+"""Versioned Research Hive role document and v0 catalog (GitHub #93).
 
-This module owns the role domain document only. Catalog lookup, binding,
-capability enforcement, CLI, and lab_run wiring are out of scope here.
+This module owns the role domain document and the four built-in v0 roles.
+Binding, capability enforcement, CLI, and lab_run wiring are out of scope here.
 """
 
 from __future__ import annotations
@@ -228,6 +228,80 @@ def parse_research_role_json(text: str) -> ResearchRole:
     return ResearchRole.from_dict(raw)
 
 
+def _v0_role_document(
+    role_id: str,
+    *,
+    capabilities: dict[str, bool],
+    inputs: list[str],
+    outputs: list[str],
+    must_be_independent_of: list[str],
+) -> dict[str, Any]:
+    return {
+        "schema_version": RESEARCH_ROLE_SCHEMA_VERSION,
+        "role_id": role_id,
+        "capabilities": dict(capabilities),
+        "inputs": list(inputs),
+        "outputs": list(outputs),
+        "constraints": {"must_be_independent_of": list(must_be_independent_of)},
+    }
+
+
+_V0_ROLE_DOCUMENTS: tuple[dict[str, Any], ...] = (
+    _v0_role_document(
+        "research_coordinator",
+        capabilities={
+            "read_repository": True,
+            "read_results": True,
+            "execute_tests": False,
+            "modify_code": False,
+            "launch_experiments": False,
+        },
+        inputs=["question", "research_contract"],
+        outputs=["experiment_plan.json"],
+        must_be_independent_of=[],
+    ),
+    _v0_role_document(
+        "experiment_agent",
+        capabilities={
+            "read_repository": True,
+            "read_results": True,
+            "execute_tests": True,
+            "modify_code": True,
+            "launch_experiments": True,
+        },
+        inputs=["research_contract", "experiment_plan"],
+        outputs=["result_artifacts", "findings.json", "findings.md"],
+        must_be_independent_of=[],
+    ),
+    _v0_role_document(
+        "verification_agent",
+        capabilities={
+            "read_repository": True,
+            "read_results": True,
+            "execute_tests": True,
+            "modify_code": False,
+            "launch_experiments": False,
+        },
+        inputs=["hypothesis", "experiment_manifest", "result_artifacts"],
+        outputs=["findings.json", "verification.md"],
+        must_be_independent_of=["experiment_author"],
+    ),
+    _v0_role_document(
+        "artifact_agent",
+        capabilities={
+            "read_repository": True,
+            "read_results": True,
+            "execute_tests": False,
+            "modify_code": False,
+            "launch_experiments": False,
+        },
+        inputs=["research_contract", "result_artifacts", "verification.md"],
+        outputs=["artifact_bundle", "provenance.json"],
+        must_be_independent_of=[],
+    ),
+)
+
+
 def _validate_schema_version(value: object) -> None:
     if type(value) is not int:
         raise ResearchRoleValidationError("schema_version must be an int")
@@ -313,3 +387,16 @@ def _thaw_json_value(value: object) -> object:
     if isinstance(value, tuple):
         return [_thaw_json_value(item) for item in value]
     return value
+
+
+V0_RESEARCH_ROLES: Mapping[str, ResearchRole] = MappingProxyType(
+    {document["role_id"]: ResearchRole.from_dict(document) for document in _V0_ROLE_DOCUMENTS}
+)
+
+
+def v0_role(role_id: str) -> ResearchRole:
+    """Look up a built-in v0 role. Unknown ids are a validation error."""
+    try:
+        return V0_RESEARCH_ROLES[role_id]
+    except KeyError as exc:
+        raise ResearchRoleValidationError(f"unknown v0 role: {role_id!r}") from exc

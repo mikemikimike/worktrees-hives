@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -10,9 +12,15 @@ import pytest
 from worktrees_hives.errors import ResearchRoleValidationError
 from worktrees_hives.research_roles import (
     RESEARCH_ROLE_SCHEMA_VERSION,
+    V0_RESEARCH_ROLES,
     ResearchCapability,
     ResearchRole,
     parse_research_role_json,
+    v0_role,
+)
+
+FIXTURE_PATH = (
+    Path(__file__).resolve().parents[2] / "docs" / "examples" / "research-roles-v0.json"
 )
 
 
@@ -67,6 +75,16 @@ class TestResearchRoleRoundTrip:
             "modify_code",
             "launch_experiments",
         ]
+
+    def test_must_be_independent_of_is_derived(self) -> None:
+        role = ResearchRole.from_dict(_valid_role())
+        assert role.must_be_independent_of == ("experiment_author",)
+
+    def test_allows_grants_and_denies(self) -> None:
+        role = ResearchRole.from_dict(_valid_role())
+        assert role.capabilities.allows(ResearchCapability.EXECUTE_TESTS) is True
+        assert role.capabilities.allows(ResearchCapability.MODIFY_CODE) is False
+        assert role.capabilities.allows("merge_pull_request") is False
 
 
 class TestResearchRoleValidation:
@@ -137,3 +155,45 @@ class TestResearchRoleImmutability:
         role = ResearchRole.from_dict(_valid_role())
         with pytest.raises(FrozenInstanceError):
             role.role_id = "other"  # type: ignore[misc]
+
+
+class TestV0Catalog:
+    def test_four_role_ids(self) -> None:
+        assert tuple(V0_RESEARCH_ROLES) == (
+            "research_coordinator",
+            "experiment_agent",
+            "verification_agent",
+            "artifact_agent",
+        )
+
+    def test_verification_agent_cannot_modify_or_launch(self) -> None:
+        role = v0_role("verification_agent")
+        assert role.capabilities.modify_code is False
+        assert role.capabilities.launch_experiments is False
+        assert role.capabilities.execute_tests is True
+        assert role.must_be_independent_of == ("experiment_author",)
+
+    def test_experiment_agent_may_modify_and_launch(self) -> None:
+        role = v0_role("experiment_agent")
+        assert role.capabilities.modify_code is True
+        assert role.capabilities.launch_experiments is True
+
+    def test_coordinator_and_artifact_are_non_mutating(self) -> None:
+        for role_id in ("research_coordinator", "artifact_agent"):
+            role = v0_role(role_id)
+            assert role.capabilities.modify_code is False
+            assert role.capabilities.execute_tests is False
+            assert role.capabilities.launch_experiments is False
+            assert role.capabilities.read_repository is True
+            assert role.capabilities.read_results is True
+
+    def test_unknown_catalog_id_raises(self) -> None:
+        with pytest.raises(ResearchRoleValidationError, match="unknown v0 role"):
+            v0_role("literature_agent")
+
+    def test_fixture_round_trip(self) -> None:
+        payload = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        roles = [ResearchRole.from_dict(item) for item in payload["roles"]]
+        assert [r.role_id for r in roles] == list(V0_RESEARCH_ROLES)
+        for role in roles:
+            assert role == v0_role(role.role_id)
