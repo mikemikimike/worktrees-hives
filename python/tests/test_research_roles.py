@@ -278,6 +278,15 @@ class TestCapabilityEnforcement:
         assert classify_command(["cargo", "test"]) == tests
 
         assert classify_command(["lab", "run"]) == launch
+        assert classify_command(["worktrees-hives", "--json", "lab", "run"]) == launch
+        assert classify_command(["wh-orch", "--state", "/tmp/lab", "lab", "run"]) == launch
+        assert classify_command(["worktrees-hives", "plan", "--repo", "org/lab"]) == frozenset()
+        assert (
+            classify_command(
+                ["wh-orch", "watchlist", "add", "j1", "acme", "example", "feature/lab"]
+            )
+            == frozenset()
+        )
         assert classify_command(["git", "log"]) == frozenset()
         assert classify_command(["git", "diff"]) == frozenset()
 

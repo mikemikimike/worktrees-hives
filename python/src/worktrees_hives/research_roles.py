@@ -461,6 +461,7 @@ _PYTHON_TEST_MODULES: frozenset[str] = frozenset({"pytest", "unittest"})
 _LAUNCH_CLI_NAMES: frozenset[str] = frozenset(
     {"worktrees-hives", "worktrees-hives.exe", "wh-orch", "wh-orch.exe"}
 )
+_HIVE_GLOBALS_WITH_VALUE: frozenset[str] = frozenset({"--state"})
 _CARGO_GLOBALS_WITH_VALUE: frozenset[str] = frozenset(
     {"-C", "--manifest-path", "--color", "--config", "--explain", "-Z"}
 )
@@ -505,8 +506,10 @@ def classify_command(command: str | Sequence[str]) -> frozenset[ResearchCapabili
     if first in {"lab", "lab.exe"}:
         return frozenset({ResearchCapability.LAUNCH_EXPERIMENTS})
 
-    if first in _LAUNCH_CLI_NAMES and any(_token_basename(token) == "lab" for token in argv[1:]):
-        return frozenset({ResearchCapability.LAUNCH_EXPERIMENTS})
+    if first in _LAUNCH_CLI_NAMES:
+        sub_i = _skip_leading_options(argv, 1, value_options=_HIVE_GLOBALS_WITH_VALUE)
+        if sub_i < len(argv) and argv[sub_i].casefold() in {"lab", "lab.exe"}:
+            return frozenset({ResearchCapability.LAUNCH_EXPERIMENTS})
 
     return frozenset()
 
