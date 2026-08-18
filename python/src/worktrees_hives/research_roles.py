@@ -1,7 +1,8 @@
-"""Versioned Research Hive role document, v0 catalog, and capability gate (GitHub #93).
+"""Versioned Research Hive role document, v0 catalog, gate, and binding (GitHub #93).
 
-This module owns the role domain document, the four built-in v0 roles, and the
-fail-closed capability gate. Binding, CLI, and lab_run wiring are out of scope.
+This module owns the role domain document, the four built-in v0 roles, the
+fail-closed capability gate, and RoleBinding provenance metadata. CLI and
+lab_run wiring remain out of scope.
 """
 
 from __future__ import annotations
@@ -212,6 +213,39 @@ class ResearchRole:
             constraints=_require_json_object(raw["constraints"], "constraints"),
             extensions=extensions,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class RoleBinding:
+    """Pair one ResearchRole contract with a model, provider, and agent identity."""
+
+    role: ResearchRole
+    model_id: str
+    provider: str
+    agent_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "model_id", _require_nonempty_string(self.model_id, "model_id").strip()
+        )
+        object.__setattr__(
+            self, "provider", _require_nonempty_string(self.provider, "provider").strip()
+        )
+        object.__setattr__(
+            self, "agent_id", _require_nonempty_string(self.agent_id, "agent_id").strip()
+        )
+
+
+def binding_metadata(binding: RoleBinding) -> dict[str, Any]:
+    """JSON-ready provenance for a role bound to a concrete model identity."""
+    return {
+        "schema_version": RESEARCH_ROLE_SCHEMA_VERSION,
+        "role_id": binding.role.role_id,
+        "model_id": binding.model_id,
+        "provider": binding.provider,
+        "agent_id": binding.agent_id,
+        "capabilities": binding.role.capabilities.to_dict(),
+    }
 
 
 def parse_research_role_json(text: str) -> ResearchRole:

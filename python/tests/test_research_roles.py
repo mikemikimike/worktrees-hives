@@ -15,8 +15,10 @@ from worktrees_hives.research_roles import (
     V0_RESEARCH_ROLES,
     ResearchCapability,
     ResearchRole,
+    RoleBinding,
     assert_capability,
     assert_role_command_allowed,
+    binding_metadata,
     classify_command,
     parse_research_role_json,
     v0_role,
@@ -282,3 +284,40 @@ class TestCapabilityEnforcement:
     def test_catalog_mapping_is_read_only(self) -> None:
         with pytest.raises(TypeError):
             V0_RESEARCH_ROLES["verification_agent"] = v0_role("experiment_agent")  # type: ignore[index]
+
+
+class TestRoleBinding:
+    def test_two_models_bind_to_same_role_contract(self) -> None:
+        role = v0_role("verification_agent")
+        grok = RoleBinding(role=role, model_id="grok-4.6", provider="xai", agent_id="verifier-a")
+        claude = RoleBinding(
+            role=role, model_id="claude-opus", provider="anthropic", agent_id="verifier-b"
+        )
+        assert grok.role == claude.role
+        assert grok.role is role
+        assert grok.model_id != claude.model_id
+        meta_a = binding_metadata(grok)
+        meta_b = binding_metadata(claude)
+        assert meta_a["role_id"] == meta_b["role_id"] == "verification_agent"
+        assert meta_a["provider"] == "xai"
+        assert meta_b["provider"] == "anthropic"
+        assert meta_a["capabilities"]["modify_code"] is False
+        assert meta_a["schema_version"] == RESEARCH_ROLE_SCHEMA_VERSION
+
+    def test_rejects_blank_identities(self) -> None:
+        role = v0_role("verification_agent")
+        with pytest.raises(ResearchRoleValidationError, match="model_id"):
+            RoleBinding(role=role, model_id=" ", provider="xai", agent_id="a")
+        with pytest.raises(ResearchRoleValidationError, match="provider"):
+            RoleBinding(role=role, model_id="grok-4.6", provider=" ", agent_id="a")
+        with pytest.raises(ResearchRoleValidationError, match="agent_id"):
+            RoleBinding(role=role, model_id="grok-4.6", provider="xai", agent_id=" ")
+
+
+def test_package_exports_research_roles() -> None:
+    import worktrees_hives as wh
+
+    assert wh.ResearchRole is ResearchRole
+    assert wh.RoleBinding is RoleBinding
+    assert wh.v0_role is v0_role
+    assert wh.assert_role_command_allowed is assert_role_command_allowed
