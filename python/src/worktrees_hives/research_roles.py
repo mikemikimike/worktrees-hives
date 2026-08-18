@@ -1,20 +1,25 @@
-"""Versioned Research Hive role document and v0 catalog (GitHub #93).
+"""Versioned Research Hive role document, v0 catalog, and capability gate (GitHub #93).
 
-This module owns the role domain document and the four built-in v0 roles.
-Binding, capability enforcement, CLI, and lab_run wiring are out of scope here.
+This module owns the role domain document, the four built-in v0 roles, and the
+fail-closed capability gate. Binding, CLI, and lab_run wiring are out of scope.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import os
+import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from worktrees_hives.errors import ResearchRoleValidationError
+from worktrees_hives.errors import ResearchRoleValidationError, RoleCapabilityError
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 # Domain-document version, independent of the outer Python/Rust JSON envelope.
 RESEARCH_ROLE_SCHEMA_VERSION: int = 1
@@ -400,3 +405,146 @@ def v0_role(role_id: str) -> ResearchRole:
         return V0_RESEARCH_ROLES[role_id]
     except KeyError as exc:
         raise ResearchRoleValidationError(f"unknown v0 role: {role_id!r}") from exc
+
+
+_GIT_MODIFY_SUBCOMMANDS: frozenset[str] = frozenset(
+    {
+        "add",
+        "commit",
+        "apply",
+        "rebase",
+        "cherry-pick",
+        "reset",
+        "restore",
+        "mv",
+        "rm",
+        "checkout",
+        "switch",
+    }
+)
+_PYTHON_INTERPRETERS: frozenset[str] = frozenset({"python", "python3", "python.exe", "python3.exe"})
+_PYTHON_TEST_MODULES: frozenset[str] = frozenset({"pytest", "unittest"})
+_LAUNCH_CLI_NAMES: frozenset[str] = frozenset(
+    {"worktrees-hives", "worktrees-hives.exe", "wh-orch", "wh-orch.exe"}
+)
+_CARGO_GLOBALS_WITH_VALUE: frozenset[str] = frozenset(
+    {"-C", "--manifest-path", "--color", "--config", "--explain", "-Z"}
+)
+
+
+def assert_capability(role: ResearchRole, capability: ResearchCapability | str) -> None:
+    """Deny when the role does not explicitly grant ``capability``."""
+    cap = capability if isinstance(capability, ResearchCapability) else ResearchCapability(capability)
+    if not role.capabilities.allows(cap):
+        raise RoleCapabilityError(role.role_id, cap.value)
+
+
+def classify_command(command: str | Sequence[str]) -> frozenset[ResearchCapability]:
+    """Map a command to required role capabilities. Unclassified commands yield empty."""
+    argv = _command_to_argv(command)
+    if not argv:
+        return frozenset()
+
+    first = _token_basename(argv[0])
+
+    if first in {"git", "git.exe"}:
+        sub_i = _skip_git_global_options(argv, 1)
+        if sub_i < len(argv) and argv[sub_i].casefold() in _GIT_MODIFY_SUBCOMMANDS:
+            return frozenset({ResearchCapability.MODIFY_CODE})
+        return frozenset()
+
+    if first in {"patch", "patch.exe"}:
+        return frozenset({ResearchCapability.MODIFY_CODE})
+
+    if first in {"pytest", "pytest.exe"}:
+        return frozenset({ResearchCapability.EXECUTE_TESTS})
+
+    if first in _PYTHON_INTERPRETERS and _python_invokes_test_module(argv):
+        return frozenset({ResearchCapability.EXECUTE_TESTS})
+
+    if first in {"cargo", "cargo.exe"}:
+        sub_i = _skip_leading_options(argv, 1, value_options=_CARGO_GLOBALS_WITH_VALUE)
+        if sub_i < len(argv) and argv[sub_i].casefold() == "test":
+            return frozenset({ResearchCapability.EXECUTE_TESTS})
+        return frozenset()
+
+    if first in {"lab", "lab.exe"}:
+        return frozenset({ResearchCapability.LAUNCH_EXPERIMENTS})
+
+    if first in _LAUNCH_CLI_NAMES and any(_token_basename(token) == "lab" for token in argv[1:]):
+        return frozenset({ResearchCapability.LAUNCH_EXPERIMENTS})
+
+    return frozenset()
+
+
+def assert_role_command_allowed(role: ResearchRole, command: str | Sequence[str]) -> None:
+    """Apply lab never-merge policy, then deny capabilities the role does not grant."""
+    from worktrees_hives.lab_run import assert_command_allowed
+
+    assert_command_allowed(command)
+    for cap in classify_command(command):
+        assert_capability(role, cap)
+
+
+def _strip_win_quotes(token: str) -> str:
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'":
+        return token[1:-1]
+    return token
+
+
+def _command_to_argv(command: str | Sequence[str]) -> list[str]:
+    """Normalize command to argv. Duplicates lab_run; do not import its privates."""
+    if isinstance(command, str):
+        parts = shlex.split(command, posix=(os.name != "nt"))
+        if os.name == "nt":
+            parts = [_strip_win_quotes(part) for part in parts]
+        return parts
+    return list(command)
+
+
+def _token_basename(token: str) -> str:
+    return os.path.basename(token.rstrip("/\\")).casefold()
+
+
+def _skip_git_global_options(argv: list[str], start: int) -> int:
+    """Advance index past git global options to the subcommand."""
+    index = start
+    while index < len(argv):
+        token = argv[index]
+        if not token.startswith("-"):
+            break
+        if token in {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"}:
+            index += 2
+            continue
+        if token.startswith(("--git-dir=", "--work-tree=", "--namespace=", "--config-env=")):
+            index += 1
+            continue
+        if token.startswith("--") and "=" in token:
+            index += 1
+            continue
+        index += 1
+    return index
+
+
+def _skip_leading_options(argv: list[str], start: int, *, value_options: frozenset[str]) -> int:
+    """Advance past leading flags, including those that consume a following argument."""
+    index = start
+    while index < len(argv):
+        token = argv[index]
+        if not token.startswith("-"):
+            break
+        if token in value_options:
+            index += 2
+            continue
+        if token.startswith("--") and "=" in token:
+            index += 1
+            continue
+        index += 1
+    return index
+
+
+def _python_invokes_test_module(argv: list[str]) -> bool:
+    for index, token in enumerate(argv[1:], start=1):
+        if token == "-m" and index + 1 < len(argv):
+            return argv[index + 1] in _PYTHON_TEST_MODULES
+    return False

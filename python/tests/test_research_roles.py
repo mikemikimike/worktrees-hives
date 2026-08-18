@@ -9,12 +9,15 @@ from typing import Any
 
 import pytest
 
-from worktrees_hives.errors import ResearchRoleValidationError
+from worktrees_hives.errors import PolicyError, ResearchRoleValidationError, RoleCapabilityError
 from worktrees_hives.research_roles import (
     RESEARCH_ROLE_SCHEMA_VERSION,
     V0_RESEARCH_ROLES,
     ResearchCapability,
     ResearchRole,
+    assert_capability,
+    assert_role_command_allowed,
+    classify_command,
     parse_research_role_json,
     v0_role,
 )
@@ -197,3 +200,85 @@ class TestV0Catalog:
         assert [r.role_id for r in roles] == list(V0_RESEARCH_ROLES)
         for role in roles:
             assert role == v0_role(role.role_id)
+
+
+class TestCapabilityEnforcement:
+    def test_false_capability_is_denied(self) -> None:
+        role = v0_role("verification_agent")
+        with pytest.raises(RoleCapabilityError, match="modify_code") as exc:
+            assert_capability(role, ResearchCapability.MODIFY_CODE)
+        assert exc.value.code == "ROLE_CAPABILITY_DENIED"
+        assert isinstance(exc.value, PolicyError)
+
+    def test_true_capability_is_allowed(self) -> None:
+        assert_capability(v0_role("verification_agent"), ResearchCapability.EXECUTE_TESTS)
+
+    def test_verifier_cannot_git_commit(self) -> None:
+        with pytest.raises(RoleCapabilityError, match="modify_code"):
+            assert_role_command_allowed(v0_role("verification_agent"), ["git", "commit", "-am", "x"])
+
+    def test_verifier_cannot_git_add_or_apply(self) -> None:
+        role = v0_role("verification_agent")
+        with pytest.raises(RoleCapabilityError, match="modify_code"):
+            assert_role_command_allowed(role, "git add src/foo.py")
+        with pytest.raises(RoleCapabilityError, match="modify_code"):
+            assert_role_command_allowed(role, ["git", "apply", "change.patch"])
+
+    def test_verifier_may_run_pytest(self) -> None:
+        assert_role_command_allowed(v0_role("verification_agent"), ["pytest", "-q"])
+        assert_role_command_allowed(v0_role("verification_agent"), ["python", "-m", "pytest", "-q"])
+
+    def test_experiment_agent_may_commit(self) -> None:
+        assert_role_command_allowed(v0_role("experiment_agent"), ["git", "commit", "-m", "x"])
+
+    def test_verifier_cannot_launch_lab(self) -> None:
+        with pytest.raises(RoleCapabilityError, match="launch_experiments"):
+            assert_role_command_allowed(
+                v0_role("verification_agent"),
+                ["worktrees-hives", "lab", "run", "--hypothesis-id", "h1"],
+            )
+
+    def test_merge_still_denied_by_lab_policy(self) -> None:
+        with pytest.raises(PolicyError, match="NEVER_MERGE"):
+            assert_role_command_allowed(v0_role("experiment_agent"), "gh pr merge 1 --squash")
+
+    def test_classify_commit_is_modify_code(self) -> None:
+        assert ResearchCapability.MODIFY_CODE in classify_command(["git", "commit", "-m", "x"])
+        assert ResearchCapability.EXECUTE_TESTS in classify_command(["pytest"])
+        assert ResearchCapability.LAUNCH_EXPERIMENTS in classify_command(
+            ["wh-orch", "lab", "run"]
+        )
+        assert classify_command(["git", "status"]) == frozenset()
+
+    def test_classify_skips_git_globals_and_uses_basename(self) -> None:
+        modify = frozenset({ResearchCapability.MODIFY_CODE})
+        tests = frozenset({ResearchCapability.EXECUTE_TESTS})
+        launch = frozenset({ResearchCapability.LAUNCH_EXPERIMENTS})
+
+        assert classify_command(["git", "-C", "/tmp/repo", "commit", "-m", "x"]) == modify
+        assert classify_command(["git.exe", "add", "file"]) == modify
+        assert classify_command("patch -p1 < x") == modify
+        assert classify_command(["patch", "file"]) == modify
+        for subcommand in (
+            "checkout",
+            "switch",
+            "reset",
+            "restore",
+            "rebase",
+            "cherry-pick",
+            "mv",
+            "rm",
+        ):
+            assert classify_command(["git", subcommand]) == modify
+
+        assert classify_command(["python3", "-m", "pytest"]) == tests
+        assert classify_command(["python", "-m", "unittest"]) == tests
+        assert classify_command(["cargo", "test"]) == tests
+
+        assert classify_command(["lab", "run"]) == launch
+        assert classify_command(["git", "log"]) == frozenset()
+        assert classify_command(["git", "diff"]) == frozenset()
+
+    def test_catalog_mapping_is_read_only(self) -> None:
+        with pytest.raises(TypeError):
+            V0_RESEARCH_ROLES["verification_agent"] = v0_role("experiment_agent")  # type: ignore[index]
