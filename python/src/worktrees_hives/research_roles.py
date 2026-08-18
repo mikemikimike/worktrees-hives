@@ -1,0 +1,315 @@
+"""Versioned Research Hive role and capability contract (GitHub #93).
+
+This module owns the role domain document only. Catalog lookup, binding,
+capability enforcement, CLI, and lab_run wiring are out of scope here.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from enum import StrEnum
+from types import MappingProxyType
+from typing import Any
+
+from worktrees_hives.errors import ResearchRoleValidationError
+
+# Domain-document version, independent of the outer Python/Rust JSON envelope.
+RESEARCH_ROLE_SCHEMA_VERSION: int = 1
+
+_REQUIRED_FIELDS: tuple[str, ...] = (
+    "schema_version",
+    "role_id",
+    "capabilities",
+    "inputs",
+    "outputs",
+    "constraints",
+)
+
+_KNOWN_FIELDS: frozenset[str] = frozenset(_REQUIRED_FIELDS)
+
+
+class ResearchCapability(StrEnum):
+    """Closed set of Research Hive v0 capabilities. Omitted keys default false."""
+
+    READ_REPOSITORY = "read_repository"
+    READ_RESULTS = "read_results"
+    EXECUTE_TESTS = "execute_tests"
+    MODIFY_CODE = "modify_code"
+    LAUNCH_EXPERIMENTS = "launch_experiments"
+
+
+_KNOWN_CAPABILITY_NAMES: frozenset[str] = frozenset(item.value for item in ResearchCapability)
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchRoleCapabilities:
+    """Explicit booleans for the five known capabilities. Missing keys are false."""
+
+    read_repository: bool = False
+    read_results: bool = False
+    execute_tests: bool = False
+    modify_code: bool = False
+    launch_experiments: bool = False
+
+    def __post_init__(self) -> None:
+        for capability in ResearchCapability:
+            value = getattr(self, capability.value)
+            if type(value) is not bool:
+                raise ResearchRoleValidationError(f"{capability.value} must be a boolean")
+
+    def allows(self, capability: ResearchCapability | str) -> bool:
+        """Return True only when the named capability is explicitly granted."""
+        try:
+            name = ResearchCapability(capability).value
+        except ValueError:
+            return False
+        return getattr(self, name) is True
+
+    def to_dict(self) -> dict[str, bool]:
+        """Serialize every known capability key, including false defaults."""
+        return {capability.value: getattr(self, capability.value) for capability in ResearchCapability}
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> ResearchRoleCapabilities:
+        """Parse a capabilities object. Unknown keys are rejected."""
+        if not isinstance(raw, dict):
+            raise ResearchRoleValidationError("capabilities must be a JSON object")
+        if not all(isinstance(name, str) for name in raw):
+            raise ResearchRoleValidationError("capabilities field names must be strings")
+
+        unknown = [name for name in raw if name not in _KNOWN_CAPABILITY_NAMES]
+        if unknown:
+            raise ResearchRoleValidationError(f"unknown capability {unknown[0]!r}")
+
+        values: dict[str, bool] = {}
+        for capability in ResearchCapability:
+            if capability.value not in raw:
+                continue
+            value = raw[capability.value]
+            if type(value) is not bool:
+                raise ResearchRoleValidationError(f"{capability.value} must be a boolean")
+            values[capability.value] = value
+        return cls(**values)
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchRole:
+    """Immutable, versioned description of a Research Hive occupant role."""
+
+    role_id: str
+    capabilities: ResearchRoleCapabilities
+    inputs: tuple[str, ...]
+    outputs: tuple[str, ...]
+    constraints: Mapping[str, object]
+    extensions: Mapping[str, object] = field(default_factory=dict, repr=False)
+    schema_version: int = RESEARCH_ROLE_SCHEMA_VERSION
+    # Derived from constraints so it cannot drift from the JSON object.
+    must_be_independent_of: tuple[str, ...] = field(init=False)
+
+    def __post_init__(self) -> None:
+        """Validate direct construction and defensively freeze all collections."""
+        _validate_schema_version(self.schema_version)
+        object.__setattr__(self, "role_id", _require_nonempty_string(self.role_id, "role_id"))
+
+        if isinstance(self.capabilities, ResearchRoleCapabilities):
+            capabilities = self.capabilities
+        elif isinstance(self.capabilities, dict):
+            capabilities = ResearchRoleCapabilities.from_dict(self.capabilities)
+        else:
+            raise ResearchRoleValidationError("capabilities must be a JSON object")
+        object.__setattr__(self, "capabilities", capabilities)
+
+        object.__setattr__(
+            self,
+            "inputs",
+            _freeze_string_array(self.inputs, "inputs", require_nonempty=False),
+        )
+        object.__setattr__(
+            self,
+            "outputs",
+            _freeze_string_array(self.outputs, "outputs", require_nonempty=False),
+        )
+
+        constraints = _freeze_json_object(self.constraints, "constraints")
+        object.__setattr__(self, "constraints", constraints)
+        object.__setattr__(self, "must_be_independent_of", _independent_of(constraints))
+
+        extensions = _freeze_json_object(self.extensions, "extensions")
+        collisions = sorted(set(extensions).intersection(_KNOWN_FIELDS))
+        if collisions:
+            raise ResearchRoleValidationError(
+                "extensions cannot shadow known fields: " + ", ".join(collisions)
+            )
+        object.__setattr__(self, "extensions", extensions)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-compatible object, preserving additive fields."""
+        out: dict[str, Any] = {
+            "schema_version": self.schema_version,
+            "role_id": self.role_id,
+            "capabilities": self.capabilities.to_dict(),
+            "inputs": list(self.inputs),
+            "outputs": list(self.outputs),
+            "constraints": _thaw_json_object(self.constraints),
+        }
+        for name, value in self.extensions.items():
+            out[name] = _thaw_json_value(value)
+        return out
+
+    def to_json(self, *, indent: int = 2) -> str:
+        """Serialize as JSON text for the domain role document."""
+        try:
+            return (
+                json.dumps(
+                    self.to_dict(),
+                    indent=indent,
+                    sort_keys=False,
+                    allow_nan=False,
+                )
+                + "\n"
+            )
+        except (TypeError, ValueError) as exc:
+            raise ResearchRoleValidationError(f"cannot serialize role to JSON: {exc}") from exc
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> ResearchRole:
+        """Parse and validate a decoded research-role JSON object."""
+        if not isinstance(raw, dict):
+            raise ResearchRoleValidationError(f"role must be an object, got {type(raw).__name__}")
+        if not all(isinstance(name, str) for name in raw):
+            raise ResearchRoleValidationError("role field names must be strings")
+
+        if "schema_version" not in raw:
+            raise ResearchRoleValidationError("schema_version is required")
+        _validate_schema_version(raw["schema_version"])
+
+        for name in _REQUIRED_FIELDS:
+            if name not in raw:
+                raise ResearchRoleValidationError(f"{name} is required")
+
+        for name in ("inputs", "outputs"):
+            if not isinstance(raw[name], list):
+                raise ResearchRoleValidationError(f"{name} must be an array of non-empty strings")
+
+        extensions = {name: value for name, value in raw.items() if name not in _KNOWN_FIELDS}
+
+        return cls(
+            schema_version=raw["schema_version"],
+            role_id=raw["role_id"],
+            capabilities=ResearchRoleCapabilities.from_dict(
+                _require_json_object(raw["capabilities"], "capabilities")
+            ),
+            inputs=raw["inputs"],
+            outputs=raw["outputs"],
+            constraints=_require_json_object(raw["constraints"], "constraints"),
+            extensions=extensions,
+        )
+
+
+def parse_research_role_json(text: str) -> ResearchRole:
+    """Decode JSON text into a validated, immutable research role."""
+    if not text or not text.strip():
+        raise ResearchRoleValidationError("research role JSON is empty")
+
+    def _reject_non_finite(value: str) -> float:
+        raise ResearchRoleValidationError(f"research role JSON contains non-finite number: {value}")
+
+    try:
+        raw = json.loads(text, parse_constant=_reject_non_finite)
+    except json.JSONDecodeError as exc:
+        raise ResearchRoleValidationError(f"research role is not valid JSON: {exc}") from exc
+    except ResearchRoleValidationError:
+        raise
+    if not isinstance(raw, dict):
+        raise ResearchRoleValidationError("research role JSON root must be an object")
+    return ResearchRole.from_dict(raw)
+
+
+def _validate_schema_version(value: object) -> None:
+    if type(value) is not int:
+        raise ResearchRoleValidationError("schema_version must be an int")
+    if value != RESEARCH_ROLE_SCHEMA_VERSION:
+        raise ResearchRoleValidationError(
+            f"unsupported schema_version {value} (expected {RESEARCH_ROLE_SCHEMA_VERSION})"
+        )
+
+
+def _require_nonempty_string(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ResearchRoleValidationError(f"{name} is required and must be a non-empty string")
+    return value
+
+
+def _freeze_string_array(
+    value: object,
+    name: str,
+    *,
+    require_nonempty: bool,
+) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise ResearchRoleValidationError(f"{name} must be an array of non-empty strings")
+    if require_nonempty and not value:
+        raise ResearchRoleValidationError(f"{name} must contain at least one item")
+    if not all(isinstance(item, str) and item.strip() for item in value):
+        raise ResearchRoleValidationError(f"{name} must be an array of non-empty strings")
+    return tuple(value)
+
+
+def _require_json_object(value: object, name: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ResearchRoleValidationError(f"{name} must be a JSON object")
+    return value
+
+
+def _independent_of(constraints: Mapping[str, object]) -> tuple[str, ...]:
+    if "must_be_independent_of" not in constraints:
+        return ()
+    return _freeze_string_array(
+        constraints["must_be_independent_of"],
+        "must_be_independent_of",
+        require_nonempty=False,
+    )
+
+
+def _freeze_json_object(value: object, path: str) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise ResearchRoleValidationError(f"{path} must be a JSON object")
+    frozen: dict[str, object] = {}
+    for name, nested in value.items():
+        if not isinstance(name, str):
+            raise ResearchRoleValidationError(f"{path} field names must be strings")
+        frozen[name] = _freeze_json_value(nested, f"{path}.{name}")
+    return MappingProxyType(frozen)
+
+
+def _freeze_json_value(value: object, path: str) -> object:
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ResearchRoleValidationError(f"{path} must be a finite JSON number")
+        return value
+    if isinstance(value, (list, tuple)):
+        return tuple(
+            _freeze_json_value(item, f"{path}[{index}]") for index, item in enumerate(value)
+        )
+    if isinstance(value, Mapping):
+        return _freeze_json_object(value, path)
+    raise ResearchRoleValidationError(
+        f"{path} contains unsupported JSON value of type {type(value).__name__}"
+    )
+
+
+def _thaw_json_object(value: Mapping[str, object]) -> dict[str, object]:
+    return {name: _thaw_json_value(nested) for name, nested in value.items()}
+
+
+def _thaw_json_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return _thaw_json_object(value)
+    if isinstance(value, tuple):
+        return [_thaw_json_value(item) for item in value]
+    return value
