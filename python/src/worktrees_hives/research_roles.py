@@ -494,6 +494,7 @@ _SHELL_EXECUTORS: frozenset[str] = frozenset(
 )
 _PYTHON_INTERPRETERS: frozenset[str] = frozenset({"python", "python3", "python.exe", "python3.exe"})
 _PYTHON_TEST_MODULES: frozenset[str] = frozenset({"pytest", "unittest"})
+_PYTHON_HIVE_MODULES: frozenset[str] = frozenset({"worktrees_hives.cli"})
 _LAUNCH_CLI_NAMES: frozenset[str] = frozenset(
     {"worktrees-hives", "worktrees-hives.exe", "wh-orch", "wh-orch.exe"}
 )
@@ -545,11 +546,17 @@ def classify_command(command: str | Sequence[str]) -> frozenset[ResearchCapabili
     if executable in _SHELL_EXECUTORS or executable in {"patch", "patch.exe"}:
         return frozenset({ResearchCapability.MODIFY_CODE})
 
-    if executable in {"pytest", "pytest.exe"}:
+    if executable in {"py.test", "py.test.exe", "pytest", "pytest.exe"}:
         return frozenset({ResearchCapability.EXECUTE_TESTS})
 
-    if executable in _PYTHON_INTERPRETERS and _python_invokes_test_module(argv):
-        return frozenset({ResearchCapability.EXECUTE_TESTS})
+    if executable in _PYTHON_INTERPRETERS:
+        module_invocation = _python_module_invocation(argv)
+        if module_invocation is not None:
+            module, arguments_start = module_invocation
+            if module in _PYTHON_TEST_MODULES:
+                return frozenset({ResearchCapability.EXECUTE_TESTS})
+            if module in _PYTHON_HIVE_MODULES and _hive_cli_invokes_lab(argv, arguments_start):
+                return frozenset({ResearchCapability.LAUNCH_EXPERIMENTS})
 
     if executable in {"cargo", "cargo.exe"} and _cargo_invokes_test(argv, 1):
         return frozenset({ResearchCapability.EXECUTE_TESTS})
@@ -557,14 +564,8 @@ def classify_command(command: str | Sequence[str]) -> frozenset[ResearchCapabili
     if executable in {"lab", "lab.exe"}:
         return frozenset({ResearchCapability.LAUNCH_EXPERIMENTS})
 
-    if executable in _LAUNCH_CLI_NAMES:
-        sub_i = _skip_leading_options(
-            argv,
-            1,
-            value_options=_HIVE_GLOBALS_WITH_VALUE,
-        )
-        if sub_i < len(argv) and argv[sub_i].casefold() in {"lab", "lab.exe"}:
-            return frozenset({ResearchCapability.LAUNCH_EXPERIMENTS})
+    if executable in _LAUNCH_CLI_NAMES and _hive_cli_invokes_lab(argv, 1):
+        return frozenset({ResearchCapability.LAUNCH_EXPERIMENTS})
 
     return frozenset()
 
@@ -622,6 +623,11 @@ def _git_command_is_read_only(argv: list[str], subcommand_index: int) -> bool:
     """Allow known inspection forms while treating unknown Git forms as mutating."""
     subcommand = argv[subcommand_index].casefold()
     arguments = argv[subcommand_index + 1 :]
+    for token in arguments:
+        if token == "--":
+            break
+        if token == "--output" or token.startswith("--output="):
+            return False
     if subcommand in _GIT_READ_ONLY_SUBCOMMANDS:
         return True
     if subcommand == "branch":
@@ -744,6 +750,8 @@ def _unwrap_env(argv: list[str]) -> list[str] | None:
             split_count += 1
             if split_count > 8:
                 return None
+            if "$" in payload:
+                return None
             try:
                 expanded = _command_to_argv(payload)
             except ValueError:
@@ -788,11 +796,39 @@ def _cargo_invokes_test(argv: list[str], start: int) -> bool:
     if index < len(argv) and argv[index].startswith("+"):
         index += 1
     index = _skip_leading_options(argv, index, value_options=_CARGO_GLOBALS_WITH_VALUE)
-    return index < len(argv) and argv[index].casefold() == "test"
+    return index < len(argv) and argv[index].casefold() in {"t", "test"}
 
 
-def _python_invokes_test_module(argv: list[str]) -> bool:
-    for index, token in enumerate(argv[1:], start=1):
-        if token == "-m" and index + 1 < len(argv):
-            return argv[index + 1] in _PYTHON_TEST_MODULES
-    return False
+def _python_module_invocation(argv: list[str]) -> tuple[str, int] | None:
+    """Return a Python ``-m`` module and its argument start before any script operand."""
+    index = 1
+    while index < len(argv):
+        token = argv[index]
+        if token == "-m":
+            if index + 1 >= len(argv):
+                return None
+            return argv[index + 1], index + 2
+        if token.startswith("-m"):
+            return token[2:], index + 1
+        if token == "-c" or token.startswith("-c") or token in {"-", "--"}:
+            return None
+        if not token.startswith("-"):
+            return None
+        if token in {"-W", "-X", "--check-hash-based-pycs"}:
+            index += 2
+        else:
+            index += 1
+    return None
+
+
+def _hive_cli_invokes_lab(argv: list[str], start: int) -> bool:
+    """Recognize the lab subcommand after supported hive CLI global options."""
+    subcommand_index = _skip_leading_options(
+        argv,
+        start,
+        value_options=_HIVE_GLOBALS_WITH_VALUE,
+    )
+    return subcommand_index < len(argv) and argv[subcommand_index].casefold() in {
+        "lab",
+        "lab.exe",
+    }
