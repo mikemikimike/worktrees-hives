@@ -215,7 +215,7 @@ class TestResearchRoleImmutability:
 - **Step 2: Run tests to verify they fail**
 
 ```bash
-cd python && python3 -m pytest tests/test_research_roles.py -q
+(cd python && python3 -m pytest tests/test_research_roles.py -q)
 ```
 
 Expected: import or collection failure (`ResearchRoleValidationError` / `research_roles` missing).
@@ -267,7 +267,7 @@ Implement:
 - **Step 5: Re-run tests**
 
 ```bash
-cd python && python3 -m pytest tests/test_research_roles.py -q
+(cd python && python3 -m pytest tests/test_research_roles.py -q)
 ```
 
 Expected: PASS.
@@ -359,7 +359,7 @@ class TestV0Catalog:
 - **Step 2: Run to verify fail**
 
 ```bash
-cd python && python3 -m pytest tests/test_research_roles.py::TestV0Catalog -q
+(cd python && python3 -m pytest tests/test_research_roles.py::TestV0Catalog -q)
 ```
 
 Expected: FAIL (`V0_RESEARCH_ROLES` missing).
@@ -398,7 +398,7 @@ Suggested inputs/outputs (must be stable; fixture and catalog must match):
 - **Step 4: Tests pass + commit**
 
 ```bash
-cd python && python3 -m pytest tests/test_research_roles.py -q
+(cd python && python3 -m pytest tests/test_research_roles.py -q)
 assert_assigned_branch
 git add python/src/worktrees_hives/research_roles.py \
         python/tests/test_research_roles.py \
@@ -490,7 +490,7 @@ class TestCapabilityEnforcement:
 - **Step 2: Run to verify fail**
 
 ```bash
-cd python && python3 -m pytest tests/test_research_roles.py::TestCapabilityEnforcement -q
+(cd python && python3 -m pytest tests/test_research_roles.py::TestCapabilityEnforcement -q)
 ```
 
 Expected: FAIL (functions missing).
@@ -530,7 +530,7 @@ Import `RoleCapabilityError` from `worktrees_hives.errors`.
 - **Step 4: Tests pass + commit**
 
 ```bash
-cd python && python3 -m pytest tests/test_research_roles.py -q
+(cd python && python3 -m pytest tests/test_research_roles.py -q)
 assert_assigned_branch
 git add python/src/worktrees_hives/research_roles.py python/tests/test_research_roles.py
 assert_assigned_branch
@@ -604,7 +604,7 @@ def test_package_exports_research_roles() -> None:
 - **Step 2: Run to verify fail**
 
 ```bash
-cd python && python3 -m pytest tests/test_research_roles.py::TestRoleBinding tests/test_research_roles.py::test_package_exports_research_roles -q
+(cd python && python3 -m pytest tests/test_research_roles.py::TestRoleBinding tests/test_research_roles.py::test_package_exports_research_roles -q)
 ```
 
 Expected: FAIL (`RoleBinding` missing and/or export missing).
@@ -657,7 +657,7 @@ Document in `docs/json-contract.md` immediately after the research-contract sect
 - **Step 4: Full Python gates + commit**
 
 ```bash
-cd python && python3 -m pytest -q && python3 -m ruff check src tests && python3 -m mypy --config-file pyproject.toml
+(cd python && python3 -m pytest -q && python3 -m ruff check src tests && python3 -m mypy --config-file pyproject.toml)
 ```
 
 ```bash

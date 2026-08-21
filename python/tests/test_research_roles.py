@@ -244,6 +244,7 @@ class TestCapabilityEnforcement:
             ["env", "--split-string=git add victim"],
             ["env", "FOO=git", "env", "-S", "${FOO} add victim"],
             ["env", "-", "git", "add", "victim"],
+            ["env", "-a", "spoof", "git", "add", "victim"],
             ["timeout", "10", "git", "stash", "pop"],
             ["timeout", "--sig", "TERM", "10", "git", "add", "victim"],
             ["nice", "git", "clean", "-fd"],
@@ -258,6 +259,40 @@ class TestCapabilityEnforcement:
     def test_verifier_may_run_pytest(self) -> None:
         assert_role_command_allowed(v0_role("verification_agent"), ["pytest", "-q"])
         assert_role_command_allowed(v0_role("verification_agent"), ["python", "-m", "pytest", "-q"])
+
+    def test_shell_wrappers_retain_nested_capability_requirements(self) -> None:
+        modifier_without_launch = ResearchRole.from_dict(
+            _valid_role(
+                role_id="modifier_without_launch",
+                capabilities={
+                    "read_repository": True,
+                    "read_results": True,
+                    "execute_tests": True,
+                    "modify_code": True,
+                    "launch_experiments": False,
+                },
+            )
+        )
+        with pytest.raises(RoleCapabilityError, match="launch_experiments"):
+            assert_role_command_allowed(
+                modifier_without_launch,
+                ["sh", "-c", "worktrees-hives lab run --hypothesis-id h1"],
+            )
+
+        modifier_without_tests = ResearchRole.from_dict(
+            _valid_role(
+                role_id="modifier_without_tests",
+                capabilities={
+                    "read_repository": True,
+                    "read_results": True,
+                    "execute_tests": False,
+                    "modify_code": True,
+                    "launch_experiments": True,
+                },
+            )
+        )
+        with pytest.raises(RoleCapabilityError, match="execute_tests"):
+            assert_role_command_allowed(modifier_without_tests, ["sh", "-c", "pytest -q"])
 
     def test_versioned_python_names_cannot_bypass_capability_checks(self) -> None:
         with pytest.raises(RoleCapabilityError, match="launch_experiments"):
@@ -305,6 +340,13 @@ class TestCapabilityEnforcement:
         modify = frozenset({ResearchCapability.MODIFY_CODE})
         tests = frozenset({ResearchCapability.EXECUTE_TESTS})
         launch = frozenset({ResearchCapability.LAUNCH_EXPERIMENTS})
+        shell = frozenset(
+            {
+                ResearchCapability.EXECUTE_TESTS,
+                ResearchCapability.MODIFY_CODE,
+                ResearchCapability.LAUNCH_EXPERIMENTS,
+            }
+        )
 
         assert classify_command(["git", "-C", "/tmp/repo", "commit", "-m", "x"]) == modify
         assert classify_command(["git.exe", "add", "file"]) == modify
@@ -350,8 +392,8 @@ class TestCapabilityEnforcement:
             )
             == modify
         )
-        assert classify_command(["sh", "-c", "git commit -m x"]) == modify
-        assert classify_command(["dash", "-c", "git commit -m x"]) == modify
+        assert classify_command(["sh", "-c", "git commit -m x"]) == shell
+        assert classify_command(["dash", "-c", "git commit -m x"]) == shell
         assert classify_command(["git", "-C"]) == frozenset()
         assert classify_command(["git", "branch", "--show-current"]) == frozenset()
         assert classify_command(["git", "remote", "-v"]) == frozenset()

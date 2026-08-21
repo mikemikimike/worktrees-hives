@@ -506,10 +506,17 @@ _CARGO_GLOBALS_WITH_VALUE: frozenset[str] = frozenset(
     {"--color", "--config", "--explain", "--manifest-path", "-C", "-Z"}
 )
 _ENV_OPTIONS_WITH_VALUE: frozenset[str] = frozenset(
-    {"-C", "--chdir", "-S", "--split-string", "-u", "--unset", "--argv0"}
+    {"-a", "--argv0", "-C", "--chdir", "-S", "--split-string", "-u", "--unset"}
 )
 _TIMEOUT_OPTIONS_WITH_VALUE: frozenset[str] = frozenset({"-k", "--kill-after", "-s", "--signal"})
 _NICE_OPTIONS_WITH_VALUE: frozenset[str] = frozenset({"-n", "--adjustment"})
+_SHELL_REQUIRED_CAPABILITIES: frozenset[ResearchCapability] = frozenset(
+    {
+        ResearchCapability.EXECUTE_TESTS,
+        ResearchCapability.MODIFY_CODE,
+        ResearchCapability.LAUNCH_EXPERIMENTS,
+    }
+)
 
 
 def assert_capability(role: ResearchRole, capability: ResearchCapability | str) -> None:
@@ -548,7 +555,10 @@ def classify_command(command: str | Sequence[str]) -> frozenset[ResearchCapabili
             return frozenset({ResearchCapability.MODIFY_CODE})
         return frozenset()
 
-    if executable in _SHELL_EXECUTORS or executable in {"patch", "patch.exe"}:
+    if executable in _SHELL_EXECUTORS:
+        return _SHELL_REQUIRED_CAPABILITIES
+
+    if executable in {"patch", "patch.exe"}:
         return frozenset({ResearchCapability.MODIFY_CODE})
 
     if executable in {"py.test", "py.test.exe", "pytest", "pytest.exe"}:
@@ -580,8 +590,10 @@ def assert_role_command_allowed(role: ResearchRole, command: str | Sequence[str]
     from worktrees_hives.lab_run import assert_command_allowed
 
     assert_command_allowed(command)
-    for cap in classify_command(command):
-        assert_capability(role, cap)
+    required_capabilities = classify_command(command)
+    for capability in ResearchCapability:
+        if capability in required_capabilities:
+            assert_capability(role, capability)
 
 
 def _strip_win_quotes(token: str) -> str:
