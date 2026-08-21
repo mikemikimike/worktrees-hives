@@ -77,7 +77,7 @@ Python owns orchestration policy. Reviewers should check:
 - `WH_BIN` and `PATH` lookup failures produce a clear `WhNotFoundError`.
 - Exit code 2 and structured policy errors become `PolicyError`, preserving the Rust error code.
 - Subprocess calls use argument arrays, bounded execution, captured output, and no shell interpolation.
-- Command capability classification consumes wrapper-option operands and aliases fail-closed; shell executors do not collapse nested test or experiment requirements.
+- Command capability classification consumes wrapper-option operands, rejects ambiguous clusters and executable read-only Git options, covers test-package `.__main__` aliases, and fails closed on unsupported wrapper escapes; shell executors do not collapse nested test or experiment requirements.
 - Discovery applies the owner allowlist before scheduling work.
 - Stacks are ordered bottom-up and children are deferred while their base is blocked.
 - The three-code-fix-commit budget is per PR per cycle; review replies do not consume it.

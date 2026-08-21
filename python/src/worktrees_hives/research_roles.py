@@ -496,7 +496,9 @@ _PYTHON_INTERPRETERS: frozenset[str] = frozenset(
     {"py", "py.exe", "python", "python3", "python.exe", "python3.exe"}
 )
 _PYTHON_SIMPLE_SHORT_OPTIONS: frozenset[str] = frozenset("bBdEhiIOPqRsSuvVx")
-_PYTHON_TEST_MODULES: frozenset[str] = frozenset({"pytest", "unittest"})
+_PYTHON_TEST_MODULES: frozenset[str] = frozenset(
+    {"pytest", "pytest.__main__", "unittest", "unittest.__main__"}
+)
 _PYTHON_HIVE_MODULES: frozenset[str] = frozenset({"worktrees_hives.cli"})
 _LAUNCH_CLI_NAMES: frozenset[str] = frozenset(
     {"worktrees-hives", "worktrees-hives.exe", "wh-orch", "wh-orch.exe"}
@@ -661,6 +663,12 @@ def _git_command_is_read_only(argv: list[str], subcommand_index: int) -> bool:
             break
         if token == "--output" or token.startswith("--output="):
             return False
+        if subcommand == "grep" and (
+            token.startswith("-O")
+            or token == "--open-files-in-pager"
+            or token.startswith("--open-files-in-pager=")
+        ):
+            return False
     if subcommand in _GIT_READ_ONLY_SUBCOMMANDS:
         return True
     if subcommand == "branch":
@@ -729,8 +737,8 @@ def _skip_wrapper_options(
     start: int,
     *,
     value_options: frozenset[str],
-) -> int:
-    """Return the first non-option index for a supported command wrapper."""
+) -> int | None:
+    """Return the first operand, failing closed on ambiguous short-option clusters."""
     index = start
     while index < len(argv):
         token = argv[index]
@@ -738,6 +746,8 @@ def _skip_wrapper_options(
             return index + 1
         if not token.startswith("-") or token == "-":
             return index
+        if not token.startswith("--") and len(token) > 2:
+            return None
         if _option_takes_value(token, value_options):
             index += 2
         else:
@@ -786,7 +796,7 @@ def _unwrap_env(argv: list[str]) -> list[str] | None:
             split_count += 1
             if split_count > 8:
                 return None
-            if "$" in payload:
+            if "$" in payload or "\\" in payload:
                 return None
             try:
                 expanded = _command_to_argv(payload)
@@ -795,6 +805,8 @@ def _unwrap_env(argv: list[str]) -> list[str] | None:
             current = current[:index] + expanded + current[index + consumed :]
             continue
 
+        if not token.startswith("--") and len(token) > 2:
+            return None
         if _option_takes_value(token, _ENV_OPTIONS_WITH_VALUE):
             if index + 1 >= len(current):
                 return None
@@ -817,9 +829,13 @@ def _unwrap_command(argv: list[str]) -> list[str] | None:
             continue
         elif executable in {"timeout", "timeout.exe"}:
             index = _skip_wrapper_options(current, 1, value_options=_TIMEOUT_OPTIONS_WITH_VALUE)
+            if index is None:
+                return None
             index += 1  # duration
         elif executable in {"nice", "nice.exe"}:
             index = _skip_wrapper_options(current, 1, value_options=_NICE_OPTIONS_WITH_VALUE)
+            if index is None:
+                return None
         else:
             return current
         current = current[index:] if index < len(current) else []

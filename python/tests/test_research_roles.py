@@ -235,18 +235,28 @@ class TestCapabilityEnforcement:
         with pytest.raises(RoleCapabilityError, match="modify_code"):
             assert_role_command_allowed(role, ["git", "apply", "change.patch"])
 
+    def test_verifier_cannot_use_command_launching_git_options(self) -> None:
+        with pytest.raises(RoleCapabilityError, match="modify_code"):
+            assert_role_command_allowed(
+                v0_role("verification_agent"),
+                ["git", "grep", "--open-files-in-pager=sh -c 'touch victim'", "pattern"],
+            )
+
     @pytest.mark.parametrize(
         "command",
         [
             ["env", "git", "commit", "-m", "x"],
             ["env", "-S", "git add victim"],
+            ["env", "-S", r"git\_add victim"],
             ["env", "-Sgit add victim"],
+            ["env", "-vS", "git add victim"],
             ["env", "--split-string=git add victim"],
             ["env", "FOO=git", "env", "-S", "${FOO} add victim"],
             ["env", "-", "git", "add", "victim"],
             ["env", "-a", "spoof", "git", "add", "victim"],
             ["timeout", "10", "git", "stash", "pop"],
             ["timeout", "--sig", "TERM", "10", "git", "add", "victim"],
+            ["timeout", "-vk", "2", "3", "git", "add", "victim"],
             ["nice", "git", "clean", "-fd"],
             ["sh", "-c", "git commit -m x"],
             ["dash", "-c", "git commit -m x"],
@@ -304,6 +314,11 @@ class TestCapabilityEnforcement:
             assert_role_command_allowed(
                 v0_role("artifact_agent"), ["python3.14.exe", "-m", "pytest"]
             )
+
+    @pytest.mark.parametrize("module", ["pytest.__main__", "unittest.__main__"])
+    def test_test_package_main_modules_require_execute_tests(self, module: str) -> None:
+        with pytest.raises(RoleCapabilityError, match="execute_tests"):
+            assert_role_command_allowed(v0_role("artifact_agent"), ["python", "-m", module])
 
     def test_experiment_agent_may_commit(self) -> None:
         assert_role_command_allowed(v0_role("experiment_agent"), ["git", "commit", "-m", "x"])
@@ -404,6 +419,13 @@ class TestCapabilityEnforcement:
         assert classify_command(["git", "config", "user.name", "value"]) == modify
         assert classify_command(["git", "diff", "--output=victim.py"]) == modify
         assert classify_command(["git", "show", "--output", "victim.py"]) == modify
+        assert (
+            classify_command(
+                ["git", "grep", "--open-files-in-pager=sh -c 'touch victim'", "pattern"]
+            )
+            == modify
+        )
+        assert classify_command(["git", "grep", "-Osh", "pattern"]) == modify
         assert classify_command(["git", "diff", "--", "--output=victim.py"]) == frozenset()
         assert (
             classify_command(["git", "-c", "diff.external=sh -c 'touch victim'", "diff"]) == modify
@@ -419,6 +441,8 @@ class TestCapabilityEnforcement:
         assert classify_command(["python3", "-Bm", "pytest"]) == tests
         assert classify_command(["python3", "-Bmpytest"]) == tests
         assert classify_command(["python", "-m", "unittest"]) == tests
+        assert classify_command(["python", "-m", "pytest.__main__"]) == tests
+        assert classify_command(["python", "-m", "unittest.__main__"]) == tests
         assert classify_command(["python", "helper.py", "-m", "pytest"]) == frozenset()
         assert classify_command(["python", "-c", "pass", "-m", "pytest"]) == frozenset()
         assert classify_command(["cargo", "test"]) == tests
