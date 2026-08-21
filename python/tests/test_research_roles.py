@@ -24,9 +24,7 @@ from worktrees_hives.research_roles import (
     v0_role,
 )
 
-FIXTURE_PATH = (
-    Path(__file__).resolve().parents[2] / "docs" / "examples" / "research-roles-v0.json"
-)
+FIXTURE_PATH = Path(__file__).resolve().parents[2] / "docs" / "examples" / "research-roles-v0.json"
 
 
 def _valid_role(**overrides: Any) -> dict[str, Any]:
@@ -106,6 +104,10 @@ class TestResearchRoleValidation:
     def test_rejects_empty_role_id(self) -> None:
         with pytest.raises(ResearchRoleValidationError, match="role_id"):
             ResearchRole.from_dict(_valid_role(role_id="  "))
+
+    def test_normalizes_role_id_whitespace(self) -> None:
+        role = ResearchRole.from_dict(_valid_role(role_id=" verification_agent "))
+        assert role.role_id == "verification_agent"
 
     def test_rejects_unknown_capability_key(self) -> None:
         with pytest.raises(ResearchRoleValidationError, match="unknown capability"):
@@ -215,9 +217,16 @@ class TestCapabilityEnforcement:
     def test_true_capability_is_allowed(self) -> None:
         assert_capability(v0_role("verification_agent"), ResearchCapability.EXECUTE_TESTS)
 
+    def test_unknown_capability_is_a_structured_policy_denial(self) -> None:
+        with pytest.raises(RoleCapabilityError, match="merge_pull_request") as exc:
+            assert_capability(v0_role("verification_agent"), "merge_pull_request")
+        assert exc.value.code == "ROLE_CAPABILITY_DENIED"
+
     def test_verifier_cannot_git_commit(self) -> None:
         with pytest.raises(RoleCapabilityError, match="modify_code"):
-            assert_role_command_allowed(v0_role("verification_agent"), ["git", "commit", "-am", "x"])
+            assert_role_command_allowed(
+                v0_role("verification_agent"), ["git", "commit", "-am", "x"]
+            )
 
     def test_verifier_cannot_git_add_or_apply(self) -> None:
         role = v0_role("verification_agent")
@@ -225,6 +234,19 @@ class TestCapabilityEnforcement:
             assert_role_command_allowed(role, "git add src/foo.py")
         with pytest.raises(RoleCapabilityError, match="modify_code"):
             assert_role_command_allowed(role, ["git", "apply", "change.patch"])
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            ["env", "git", "commit", "-m", "x"],
+            ["timeout", "10", "git", "stash", "pop"],
+            ["nice", "git", "clean", "-fd"],
+            ["sh", "-c", "git commit -m x"],
+        ],
+    )
+    def test_verifier_cannot_bypass_modify_gate_with_wrappers(self, command: list[str]) -> None:
+        with pytest.raises(RoleCapabilityError, match="modify_code"):
+            assert_role_command_allowed(v0_role("verification_agent"), command)
 
     def test_verifier_may_run_pytest(self) -> None:
         assert_role_command_allowed(v0_role("verification_agent"), ["pytest", "-q"])
@@ -253,9 +275,7 @@ class TestCapabilityEnforcement:
     def test_classify_commit_is_modify_code(self) -> None:
         assert ResearchCapability.MODIFY_CODE in classify_command(["git", "commit", "-m", "x"])
         assert ResearchCapability.EXECUTE_TESTS in classify_command(["pytest"])
-        assert ResearchCapability.LAUNCH_EXPERIMENTS in classify_command(
-            ["wh-orch", "lab", "run"]
-        )
+        assert ResearchCapability.LAUNCH_EXPERIMENTS in classify_command(["wh-orch", "lab", "run"])
         assert classify_command(["git", "status"]) == frozenset()
 
     def test_classify_skips_git_globals_and_uses_basename(self) -> None:
@@ -268,20 +288,31 @@ class TestCapabilityEnforcement:
         assert classify_command("patch -p1 < x") == modify
         assert classify_command(["patch", "file"]) == modify
         for subcommand in (
+            "am",
             "checkout",
+            "clean",
+            "merge",
+            "pull",
             "switch",
             "reset",
             "restore",
             "rebase",
             "cherry-pick",
+            "revert",
+            "stash",
             "mv",
             "rm",
         ):
             assert classify_command(["git", subcommand]) == modify
 
+        assert classify_command(["env", "git", "commit", "-m", "x"]) == modify
+        assert classify_command(["sh", "-c", "git commit -m x"]) == modify
+        assert classify_command(["git", "-C"]) == frozenset()
+
         assert classify_command(["python3", "-m", "pytest"]) == tests
         assert classify_command(["python", "-m", "unittest"]) == tests
         assert classify_command(["cargo", "test"]) == tests
+        assert classify_command(["cargo", "+nightly", "test"]) == tests
 
         assert classify_command(["lab", "run"]) == launch
         assert classify_command(["worktrees-hives", "--json", "lab", "run"]) == launch
@@ -329,6 +360,15 @@ class TestRoleBinding:
             RoleBinding(role=role, model_id="grok-4.6", provider=" ", agent_id="a")
         with pytest.raises(ResearchRoleValidationError, match="agent_id"):
             RoleBinding(role=role, model_id="grok-4.6", provider="xai", agent_id=" ")
+
+    def test_rejects_non_role_binding(self) -> None:
+        with pytest.raises(ResearchRoleValidationError, match="role"):
+            RoleBinding(
+                role="verification_agent",  # type: ignore[arg-type]
+                model_id="grok-4.6",
+                provider="xai",
+                agent_id="verifier-a",
+            )
 
 
 def test_package_exports_research_roles() -> None:

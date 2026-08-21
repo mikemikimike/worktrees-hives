@@ -1,6 +1,6 @@
 # Research Hive v0 roles + capability policy Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Implementation reference:** This completed plan records the intended sequence, while Beads is the sole source of task state. Agents must use the worktree and branch assigned to their current job.
 
 **Goal:** Add a versioned, fail-closed Research Hive role contract so four v0 roles are declarative capabilities, not model personas (GitHub #93 / RM-598).
 
@@ -8,11 +8,11 @@
 
 **Tech Stack:** Python 3.14, pytest, ruff, mypy. No new dependencies.
 
-**Worktree:** `/home/raulmc/rmems/worktrees-hives/.worktrees/agent-93-research-roles` on `agent/93-research-roles`. Never edit `main`.
+**Worktree:** Use the isolated worktree and feature branch assigned to the current job. Never edit the default branch.
 
 **TDD:** Every production change starts with a failing test. Watch it fail, then implement.
 
-**Commit trailer:** include `GitHub-Issue: rmems/worktrees-hives#93` and `Linear: RM-598`. Agent attribution in the commit body.
+**Commit trailer:** include `GitHub-Issue: <configured-owner>/<repository>#93` and `Linear: RM-598`. Agent attribution belongs in the commit body.
 
 **Quality gates after each task (from the worktree `python/` directory):**
 
@@ -20,6 +20,7 @@
 python3 -m pytest tests/test_research_roles.py -q
 python3 -m pytest -q
 python3 -m ruff check src/worktrees_hives/research_roles.py src/worktrees_hives/errors.py src/worktrees_hives/__init__.py tests/test_research_roles.py
+python3 -m ruff format --check src tests
 python3 -m mypy --config-file pyproject.toml
 ```
 
@@ -50,7 +51,7 @@ Do not modify `lab_run.py`, `cli.py`, Rust, or `findings.AgentRole`.
 
 **Do not** add `V0_RESEARCH_ROLES`, `RoleBinding`, or command enforcement yet.
 
-- [ ] **Step 1: Write failing tests for errors + role parse**
+- **Step 1: Write failing tests for errors + role parse**
 
 Add to `errors.py` only after the first test fails for missing names. Put tests in `python/tests/test_research_roles.py`:
 
@@ -192,7 +193,7 @@ class TestResearchRoleImmutability:
             role.role_id = "other"  # type: ignore[misc]
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- **Step 2: Run tests to verify they fail**
 
 ```bash
 cd python && python3 -m pytest tests/test_research_roles.py -q
@@ -200,7 +201,7 @@ cd python && python3 -m pytest tests/test_research_roles.py -q
 
 Expected: import or collection failure (`ResearchRoleValidationError` / `research_roles` missing).
 
-- [ ] **Step 3: Add errors**
+- **Step 3: Add errors**
 
 In `python/src/worktrees_hives/errors.py`, after `ResearchValidationError`:
 
@@ -227,7 +228,7 @@ class RoleCapabilityError(PolicyError):
 
 `RoleCapabilityError` may be unused until Task 3. That is fine; Task 1 tests do not import it yet.
 
-- [ ] **Step 4: Implement `research_roles.py` (schema only)**
+- **Step 4: Implement `research_roles.py` (schema only)**
 
 Implement:
 
@@ -244,7 +245,7 @@ Implement:
 
 `must_be_independent_of` should be a convenience attribute populated in `__post_init__` from `constraints`. Include it in equality via the frozen dataclass (derive it, do not take it as a constructor field that can drift). Suggested constructor field: only `constraints`; set `must_be_independent_of` with `object.__setattr__`.
 
-- [ ] **Step 5: Re-run tests**
+- **Step 5: Re-run tests**
 
 ```bash
 cd python && python3 -m pytest tests/test_research_roles.py -q
@@ -252,7 +253,7 @@ cd python && python3 -m pytest tests/test_research_roles.py -q
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- **Step 6: Commit**
 
 ```bash
 git add python/src/worktrees_hives/errors.py \
@@ -263,7 +264,7 @@ feat(python): add Research Hive role schema (#93)
 
 Versioned ResearchRole + fail-closed capability defaults.
 
-GitHub-Issue: rmems/worktrees-hives#93
+GitHub-Issue: <configured-owner>/<repository>#93
 Linear: RM-598
 Agent: grok-4.6 (subagent-driven-development task 1)
 EOF
@@ -281,7 +282,7 @@ EOF
 - Modify: `python/tests/test_research_roles.py`
 - Create: `docs/examples/research-roles-v0.json`
 
-- [ ] **Step 1: Write failing catalog tests**
+- **Step 1: Write failing catalog tests**
 
 ```python
 from pathlib import Path
@@ -334,7 +335,7 @@ class TestV0Catalog:
             assert role == v0_role(role.role_id)
 ```
 
-- [ ] **Step 2: Run to verify fail**
+- **Step 2: Run to verify fail**
 
 ```bash
 cd python && python3 -m pytest tests/test_research_roles.py::TestV0Catalog -q
@@ -342,7 +343,7 @@ cd python && python3 -m pytest tests/test_research_roles.py::TestV0Catalog -q
 
 Expected: FAIL (`V0_RESEARCH_ROLES` missing).
 
-- [ ] **Step 3: Implement catalog + fixture**
+- **Step 3: Implement catalog + fixture**
 
 `v0_role(role_id: str) -> ResearchRole` looks up `V0_RESEARCH_ROLES` or raises `ResearchRoleValidationError` matching `unknown v0 role`.
 
@@ -373,7 +374,7 @@ Suggested inputs/outputs (must be stable; fixture and catalog must match):
 
 `V0_RESEARCH_ROLES` is a `MappingProxyType` (or other read-only mapping) keyed in the order above.
 
-- [ ] **Step 4: Tests pass + commit**
+- **Step 4: Tests pass + commit**
 
 ```bash
 cd python && python3 -m pytest tests/test_research_roles.py -q
@@ -385,7 +386,7 @@ feat(python): add four v0 Research Hive role catalog (#93)
 
 Declarative coordinator, experiment, verification, and artifact roles.
 
-GitHub-Issue: rmems/worktrees-hives#93
+GitHub-Issue: <configured-owner>/<repository>#93
 Linear: RM-598
 Agent: grok-4.6 (subagent-driven-development task 2)
 EOF
@@ -402,7 +403,7 @@ EOF
 - Modify: `python/src/worktrees_hives/research_roles.py`
 - Modify: `python/tests/test_research_roles.py`
 
-- [ ] **Step 1: Write failing enforcement tests**
+- **Step 1: Write failing enforcement tests**
 
 ```python
 from worktrees_hives.errors import PolicyError, RoleCapabilityError
@@ -463,7 +464,7 @@ class TestCapabilityEnforcement:
         assert classify_command(["git", "status"]) == frozenset()
 ```
 
-- [ ] **Step 2: Run to verify fail**
+- **Step 2: Run to verify fail**
 
 ```bash
 cd python && python3 -m pytest tests/test_research_roles.py::TestCapabilityEnforcement -q
@@ -471,7 +472,7 @@ cd python && python3 -m pytest tests/test_research_roles.py::TestCapabilityEnfor
 
 Expected: FAIL (functions missing).
 
-- [ ] **Step 3: Implement enforcement**
+- **Step 3: Implement enforcement**
 
 ```python
 def assert_capability(role: ResearchRole, capability: ResearchCapability | str) -> None:
@@ -503,7 +504,7 @@ Classification rules (must match tests):
 
 Import `RoleCapabilityError` from `worktrees_hives.errors`.
 
-- [ ] **Step 4: Tests pass + commit**
+- **Step 4: Tests pass + commit**
 
 ```bash
 cd python && python3 -m pytest tests/test_research_roles.py -q
@@ -513,7 +514,7 @@ feat(python): enforce Research Hive role capabilities (#93)
 
 Fail-closed gate composes with lab never-merge policy.
 
-GitHub-Issue: rmems/worktrees-hives#93
+GitHub-Issue: <configured-owner>/<repository>#93
 Linear: RM-598
 Agent: grok-4.6 (subagent-driven-development task 3)
 EOF
@@ -532,7 +533,7 @@ EOF
 - Modify: `python/src/worktrees_hives/__init__.py`
 - Modify: `docs/json-contract.md`
 
-- [ ] **Step 1: Write failing binding/export tests**
+- **Step 1: Write failing binding/export tests**
 
 ```python
 from worktrees_hives.errors import ResearchRoleValidationError
@@ -575,7 +576,7 @@ def test_package_exports_research_roles() -> None:
     assert wh.assert_role_command_allowed is assert_role_command_allowed
 ```
 
-- [ ] **Step 2: Run to verify fail**
+- **Step 2: Run to verify fail**
 
 ```bash
 cd python && python3 -m pytest tests/test_research_roles.py::TestRoleBinding tests/test_research_roles.py::test_package_exports_research_roles -q
@@ -583,7 +584,7 @@ cd python && python3 -m pytest tests/test_research_roles.py::TestRoleBinding tes
 
 Expected: FAIL (`RoleBinding` missing and/or export missing).
 
-- [ ] **Step 3: Implement binding + exports + docs**
+- **Step 3: Implement binding + exports + docs**
 
 `RoleBinding` frozen slotted dataclass: `role: ResearchRole`, `model_id: str`, `provider: str`, `agent_id: str`. Non-empty stripped strings.
 
@@ -628,7 +629,7 @@ Document in `docs/json-contract.md` immediately after the research-contract sect
 - #93 does not add a CLI command
 - link the spec and `docs/examples/research-roles-v0.json`
 
-- [ ] **Step 4: Full Python gates + commit**
+- **Step 4: Full Python gates + commit**
 
 ```bash
 cd python && python3 -m pytest -q && python3 -m ruff check src tests && python3 -m mypy --config-file pyproject.toml
@@ -648,7 +649,7 @@ feat(python): bind Research Hive roles to model identity (#93)
 
 RoleBinding provenance plus envelope documentation.
 
-GitHub-Issue: rmems/worktrees-hives#93
+GitHub-Issue: <configured-owner>/<repository>#93
 Linear: RM-598
 Agent: grok-4.6 (subagent-driven-development task 4)
 EOF

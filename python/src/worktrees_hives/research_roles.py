@@ -76,7 +76,9 @@ class ResearchRoleCapabilities:
 
     def to_dict(self) -> dict[str, bool]:
         """Serialize every known capability key, including false defaults."""
-        return {capability.value: getattr(self, capability.value) for capability in ResearchCapability}
+        return {
+            capability.value: getattr(self, capability.value) for capability in ResearchCapability
+        }
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> ResearchRoleCapabilities:
@@ -225,6 +227,8 @@ class RoleBinding:
     agent_id: str
 
     def __post_init__(self) -> None:
+        if not isinstance(self.role, ResearchRole):
+            raise ResearchRoleValidationError("role must be a ResearchRole")
         object.__setattr__(
             self, "model_id", _require_nonempty_string(self.model_id, "model_id").strip()
         )
@@ -353,7 +357,7 @@ def _validate_schema_version(value: object) -> None:
 def _require_nonempty_string(value: object, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ResearchRoleValidationError(f"{name} is required and must be a non-empty string")
-    return value
+    return value.strip()
 
 
 def _freeze_string_array(
@@ -441,19 +445,45 @@ def v0_role(role_id: str) -> ResearchRole:
         raise ResearchRoleValidationError(f"unknown v0 role: {role_id!r}") from exc
 
 
-_GIT_MODIFY_SUBCOMMANDS: frozenset[str] = frozenset(
+_GIT_READ_ONLY_SUBCOMMANDS: frozenset[str] = frozenset(
     {
-        "add",
-        "commit",
-        "apply",
-        "rebase",
-        "cherry-pick",
-        "reset",
-        "restore",
-        "mv",
-        "rm",
-        "checkout",
-        "switch",
+        "blame",
+        "cat-file",
+        "count-objects",
+        "describe",
+        "diff",
+        "for-each-ref",
+        "grep",
+        "help",
+        "log",
+        "ls-files",
+        "ls-tree",
+        "name-rev",
+        "rev-list",
+        "rev-parse",
+        "shortlog",
+        "show",
+        "status",
+        "version",
+        "whatchanged",
+    }
+)
+_SHELL_EXECUTORS: frozenset[str] = frozenset(
+    {
+        "bash",
+        "bash.exe",
+        "cmd",
+        "cmd.exe",
+        "fish",
+        "fish.exe",
+        "powershell",
+        "powershell.exe",
+        "pwsh",
+        "pwsh.exe",
+        "sh",
+        "sh.exe",
+        "zsh",
+        "zsh.exe",
     }
 )
 _PYTHON_INTERPRETERS: frozenset[str] = frozenset({"python", "python3", "python.exe", "python3.exe"})
@@ -462,56 +492,68 @@ _LAUNCH_CLI_NAMES: frozenset[str] = frozenset(
     {"worktrees-hives", "worktrees-hives.exe", "wh-orch", "wh-orch.exe"}
 )
 _HIVE_GLOBALS_WITH_VALUE: frozenset[str] = frozenset({"--state"})
-_CARGO_GLOBALS_WITH_VALUE: frozenset[str] = frozenset(
-    {"-C", "--manifest-path", "--color", "--config", "--explain", "-Z"}
-)
 
 
 def assert_capability(role: ResearchRole, capability: ResearchCapability | str) -> None:
     """Deny when the role does not explicitly grant ``capability``."""
-    cap = capability if isinstance(capability, ResearchCapability) else ResearchCapability(capability)
+    try:
+        cap = (
+            capability
+            if isinstance(capability, ResearchCapability)
+            else ResearchCapability(capability)
+        )
+    except ValueError:
+        raise RoleCapabilityError(role.role_id, str(capability)) from None
     if not role.capabilities.allows(cap):
         raise RoleCapabilityError(role.role_id, cap.value)
 
 
 def classify_command(command: str | Sequence[str]) -> frozenset[ResearchCapability]:
-    """Map a command to required role capabilities. Unclassified commands yield empty."""
+    """Map structured argv to required capabilities, including common wrappers."""
     argv = _command_to_argv(command)
     if not argv:
         return frozenset()
 
-    first = _token_basename(argv[0])
+    required: set[ResearchCapability] = set()
+    for index, token in enumerate(argv):
+        executable = _token_basename(token)
 
-    if first in {"git", "git.exe"}:
-        sub_i = _skip_git_global_options(argv, 1)
-        if sub_i < len(argv) and argv[sub_i].casefold() in _GIT_MODIFY_SUBCOMMANDS:
-            return frozenset({ResearchCapability.MODIFY_CODE})
-        return frozenset()
+        if executable in {"git", "git.exe"}:
+            sub_i = _skip_git_global_options(argv, index + 1)
+            if sub_i < len(argv) and argv[sub_i].casefold() not in _GIT_READ_ONLY_SUBCOMMANDS:
+                required.add(ResearchCapability.MODIFY_CODE)
+            continue
 
-    if first in {"patch", "patch.exe"}:
-        return frozenset({ResearchCapability.MODIFY_CODE})
+        if executable in _SHELL_EXECUTORS or executable in {"patch", "patch.exe"}:
+            required.add(ResearchCapability.MODIFY_CODE)
+            continue
 
-    if first in {"pytest", "pytest.exe"}:
-        return frozenset({ResearchCapability.EXECUTE_TESTS})
+        if executable in {"pytest", "pytest.exe"}:
+            required.add(ResearchCapability.EXECUTE_TESTS)
+            continue
 
-    if first in _PYTHON_INTERPRETERS and _python_invokes_test_module(argv):
-        return frozenset({ResearchCapability.EXECUTE_TESTS})
+        if executable in _PYTHON_INTERPRETERS and _python_invokes_test_module(argv[index:]):
+            required.add(ResearchCapability.EXECUTE_TESTS)
+            continue
 
-    if first in {"cargo", "cargo.exe"}:
-        sub_i = _skip_leading_options(argv, 1, value_options=_CARGO_GLOBALS_WITH_VALUE)
-        if sub_i < len(argv) and argv[sub_i].casefold() == "test":
-            return frozenset({ResearchCapability.EXECUTE_TESTS})
-        return frozenset()
+        if executable in {"cargo", "cargo.exe"} and _cargo_invokes_test(argv, index + 1):
+            required.add(ResearchCapability.EXECUTE_TESTS)
+            continue
 
-    if first in {"lab", "lab.exe"}:
-        return frozenset({ResearchCapability.LAUNCH_EXPERIMENTS})
+        if index == 0 and executable in {"lab", "lab.exe"}:
+            required.add(ResearchCapability.LAUNCH_EXPERIMENTS)
+            continue
 
-    if first in _LAUNCH_CLI_NAMES:
-        sub_i = _skip_leading_options(argv, 1, value_options=_HIVE_GLOBALS_WITH_VALUE)
-        if sub_i < len(argv) and argv[sub_i].casefold() in {"lab", "lab.exe"}:
-            return frozenset({ResearchCapability.LAUNCH_EXPERIMENTS})
+        if executable in _LAUNCH_CLI_NAMES:
+            sub_i = _skip_leading_options(
+                argv,
+                index + 1,
+                value_options=_HIVE_GLOBALS_WITH_VALUE,
+            )
+            if sub_i < len(argv) and argv[sub_i].casefold() in {"lab", "lab.exe"}:
+                required.add(ResearchCapability.LAUNCH_EXPERIMENTS)
 
-    return frozenset()
+    return frozenset(required)
 
 
 def assert_role_command_allowed(role: ResearchRole, command: str | Sequence[str]) -> None:
@@ -587,6 +629,16 @@ def _skip_leading_options(argv: list[str], start: int, *, value_options: frozens
             continue
         index += 1
     return index
+
+
+def _cargo_invokes_test(argv: list[str], start: int) -> bool:
+    """Recognize ``cargo test`` even when a ``+toolchain`` prefix is present."""
+    for token in argv[start:]:
+        if token == "--":
+            return False
+        if token.casefold() == "test":
+            return True
+    return False
 
 
 def _python_invokes_test_module(argv: list[str]) -> bool:
