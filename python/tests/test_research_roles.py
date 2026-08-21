@@ -259,6 +259,17 @@ class TestCapabilityEnforcement:
         assert_role_command_allowed(v0_role("verification_agent"), ["pytest", "-q"])
         assert_role_command_allowed(v0_role("verification_agent"), ["python", "-m", "pytest", "-q"])
 
+    def test_versioned_python_names_cannot_bypass_capability_checks(self) -> None:
+        with pytest.raises(RoleCapabilityError, match="launch_experiments"):
+            assert_role_command_allowed(
+                v0_role("verification_agent"),
+                ["python3.14", "-m", "worktrees_hives.cli", "lab", "run"],
+            )
+        with pytest.raises(RoleCapabilityError, match="execute_tests"):
+            assert_role_command_allowed(
+                v0_role("artifact_agent"), ["python3.14.exe", "-m", "pytest"]
+            )
+
     def test_experiment_agent_may_commit(self) -> None:
         assert_role_command_allowed(v0_role("experiment_agent"), ["git", "commit", "-m", "x"])
 
@@ -360,6 +371,8 @@ class TestCapabilityEnforcement:
 
         assert classify_command(["py.test", "-q"]) == tests
         assert classify_command(["python3", "-m", "pytest"]) == tests
+        assert classify_command(["python3.14", "-m", "pytest"]) == tests
+        assert classify_command(["python3.14.exe", "-m", "pytest"]) == tests
         assert classify_command(["python3", "-mpytest"]) == tests
         assert classify_command(["python3", "-Bm", "pytest"]) == tests
         assert classify_command(["python3", "-Bmpytest"]) == tests

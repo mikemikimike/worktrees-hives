@@ -554,7 +554,7 @@ def classify_command(command: str | Sequence[str]) -> frozenset[ResearchCapabili
     if executable in {"py.test", "py.test.exe", "pytest", "pytest.exe"}:
         return frozenset({ResearchCapability.EXECUTE_TESTS})
 
-    if executable in _PYTHON_INTERPRETERS:
+    if _is_python_interpreter(executable):
         module_invocation = _python_module_invocation(argv)
         if module_invocation is not None:
             module, arguments_start = module_invocation
@@ -602,6 +602,17 @@ def _command_to_argv(command: str | Sequence[str]) -> list[str]:
 
 def _token_basename(token: str) -> str:
     return os.path.basename(token.rstrip("/\\")).casefold()
+
+
+def _is_python_interpreter(executable: str) -> bool:
+    """Recognize standard and numerically versioned Python executable names."""
+    if executable in _PYTHON_INTERPRETERS:
+        return True
+    name = executable.removesuffix(".exe")
+    if not name.startswith("python"):
+        return False
+    version = name.removeprefix("python")
+    return bool(version) and all(part.isascii() and part.isdecimal() for part in version.split("."))
 
 
 def _skip_git_global_options(argv: list[str], start: int) -> tuple[int, bool]:
