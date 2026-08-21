@@ -472,10 +472,16 @@ _SHELL_EXECUTORS: frozenset[str] = frozenset(
     {
         "bash",
         "bash.exe",
+        "busybox",
+        "busybox.exe",
         "cmd",
         "cmd.exe",
+        "dash",
+        "dash.exe",
         "fish",
         "fish.exe",
+        "ksh",
+        "ksh.exe",
         "powershell",
         "powershell.exe",
         "pwsh",
@@ -492,6 +498,11 @@ _LAUNCH_CLI_NAMES: frozenset[str] = frozenset(
     {"worktrees-hives", "worktrees-hives.exe", "wh-orch", "wh-orch.exe"}
 )
 _HIVE_GLOBALS_WITH_VALUE: frozenset[str] = frozenset({"--state"})
+_ENV_OPTIONS_WITH_VALUE: frozenset[str] = frozenset(
+    {"-C", "--chdir", "-S", "--split-string", "-u", "--unset", "--argv0"}
+)
+_TIMEOUT_OPTIONS_WITH_VALUE: frozenset[str] = frozenset({"-k", "--kill-after", "-s", "--signal"})
+_NICE_OPTIONS_WITH_VALUE: frozenset[str] = frozenset({"-n", "--adjustment"})
 
 
 def assert_capability(role: ResearchRole, capability: ResearchCapability | str) -> None:
@@ -510,50 +521,43 @@ def assert_capability(role: ResearchRole, capability: ResearchCapability | str) 
 
 def classify_command(command: str | Sequence[str]) -> frozenset[ResearchCapability]:
     """Map structured argv to required capabilities, including common wrappers."""
-    argv = _command_to_argv(command)
+    argv = _unwrap_command(_command_to_argv(command))
     if not argv:
         return frozenset()
 
-    required: set[ResearchCapability] = set()
-    for index, token in enumerate(argv):
-        executable = _token_basename(token)
+    executable = _token_basename(argv[0])
 
-        if executable in {"git", "git.exe"}:
-            sub_i = _skip_git_global_options(argv, index + 1)
-            if sub_i < len(argv) and argv[sub_i].casefold() not in _GIT_READ_ONLY_SUBCOMMANDS:
-                required.add(ResearchCapability.MODIFY_CODE)
-            continue
+    if executable in {"git", "git.exe"}:
+        sub_i = _skip_git_global_options(argv, 1)
+        if sub_i < len(argv) and argv[sub_i].casefold() not in _GIT_READ_ONLY_SUBCOMMANDS:
+            return frozenset({ResearchCapability.MODIFY_CODE})
+        return frozenset()
 
-        if executable in _SHELL_EXECUTORS or executable in {"patch", "patch.exe"}:
-            required.add(ResearchCapability.MODIFY_CODE)
-            continue
+    if executable in _SHELL_EXECUTORS or executable in {"patch", "patch.exe"}:
+        return frozenset({ResearchCapability.MODIFY_CODE})
 
-        if executable in {"pytest", "pytest.exe"}:
-            required.add(ResearchCapability.EXECUTE_TESTS)
-            continue
+    if executable in {"pytest", "pytest.exe"}:
+        return frozenset({ResearchCapability.EXECUTE_TESTS})
 
-        if executable in _PYTHON_INTERPRETERS and _python_invokes_test_module(argv[index:]):
-            required.add(ResearchCapability.EXECUTE_TESTS)
-            continue
+    if executable in _PYTHON_INTERPRETERS and _python_invokes_test_module(argv):
+        return frozenset({ResearchCapability.EXECUTE_TESTS})
 
-        if executable in {"cargo", "cargo.exe"} and _cargo_invokes_test(argv, index + 1):
-            required.add(ResearchCapability.EXECUTE_TESTS)
-            continue
+    if executable in {"cargo", "cargo.exe"} and _cargo_invokes_test(argv, 1):
+        return frozenset({ResearchCapability.EXECUTE_TESTS})
 
-        if index == 0 and executable in {"lab", "lab.exe"}:
-            required.add(ResearchCapability.LAUNCH_EXPERIMENTS)
-            continue
+    if executable in {"lab", "lab.exe"}:
+        return frozenset({ResearchCapability.LAUNCH_EXPERIMENTS})
 
-        if executable in _LAUNCH_CLI_NAMES:
-            sub_i = _skip_leading_options(
-                argv,
-                index + 1,
-                value_options=_HIVE_GLOBALS_WITH_VALUE,
-            )
-            if sub_i < len(argv) and argv[sub_i].casefold() in {"lab", "lab.exe"}:
-                required.add(ResearchCapability.LAUNCH_EXPERIMENTS)
+    if executable in _LAUNCH_CLI_NAMES:
+        sub_i = _skip_leading_options(
+            argv,
+            1,
+            value_options=_HIVE_GLOBALS_WITH_VALUE,
+        )
+        if sub_i < len(argv) and argv[sub_i].casefold() in {"lab", "lab.exe"}:
+            return frozenset({ResearchCapability.LAUNCH_EXPERIMENTS})
 
-    return frozenset(required)
+    return frozenset()
 
 
 def assert_role_command_allowed(role: ResearchRole, command: str | Sequence[str]) -> None:
@@ -629,6 +633,47 @@ def _skip_leading_options(argv: list[str], start: int, *, value_options: frozens
             continue
         index += 1
     return index
+
+
+def _skip_wrapper_options(
+    argv: list[str],
+    start: int,
+    *,
+    value_options: frozenset[str],
+) -> int:
+    """Return the first non-option index for a supported command wrapper."""
+    index = start
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            return index + 1
+        if not token.startswith("-") or token == "-":
+            return index
+        if token in value_options:
+            index += 2
+        else:
+            index += 1
+    return index
+
+
+def _unwrap_command(argv: list[str]) -> list[str]:
+    """Peel supported argv wrappers without inspecting ordinary command arguments."""
+    current = argv
+    while current:
+        executable = _token_basename(current[0])
+        if executable in {"env", "env.exe"}:
+            index = _skip_wrapper_options(current, 1, value_options=_ENV_OPTIONS_WITH_VALUE)
+            while index < len(current) and "=" in current[index]:
+                index += 1
+        elif executable in {"timeout", "timeout.exe"}:
+            index = _skip_wrapper_options(current, 1, value_options=_TIMEOUT_OPTIONS_WITH_VALUE)
+            index += 1  # duration
+        elif executable in {"nice", "nice.exe"}:
+            index = _skip_wrapper_options(current, 1, value_options=_NICE_OPTIONS_WITH_VALUE)
+        else:
+            return current
+        current = current[index:] if index < len(current) else []
+    return current
 
 
 def _cargo_invokes_test(argv: list[str], start: int) -> bool:

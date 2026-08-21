@@ -242,6 +242,7 @@ class TestCapabilityEnforcement:
             ["timeout", "10", "git", "stash", "pop"],
             ["nice", "git", "clean", "-fd"],
             ["sh", "-c", "git commit -m x"],
+            ["dash", "-c", "git commit -m x"],
         ],
     )
     def test_verifier_cannot_bypass_modify_gate_with_wrappers(self, command: list[str]) -> None:
@@ -306,8 +307,32 @@ class TestCapabilityEnforcement:
             assert classify_command(["git", subcommand]) == modify
 
         assert classify_command(["env", "git", "commit", "-m", "x"]) == modify
+        assert (
+            classify_command(
+                [
+                    "env",
+                    "-u",
+                    "CI",
+                    "timeout",
+                    "--signal",
+                    "TERM",
+                    "5",
+                    "nice",
+                    "-n",
+                    "2",
+                    "git",
+                    "commit",
+                    "-m",
+                    "x",
+                ]
+            )
+            == modify
+        )
         assert classify_command(["sh", "-c", "git commit -m x"]) == modify
+        assert classify_command(["dash", "-c", "git commit -m x"]) == modify
         assert classify_command(["git", "-C"]) == frozenset()
+        assert classify_command(["echo", "git", "commit"]) == frozenset()
+        assert classify_command(["echo", "worktrees-hives", "lab"]) == frozenset()
 
         assert classify_command(["python3", "-m", "pytest"]) == tests
         assert classify_command(["python", "-m", "unittest"]) == tests

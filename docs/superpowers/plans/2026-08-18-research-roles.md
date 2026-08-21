@@ -10,6 +10,17 @@
 
 **Worktree:** Use the isolated worktree and feature branch assigned to the current job. Never edit the default branch.
 
+Before running task commands, set `ASSIGNED_WORKTREE` and `ASSIGNED_BRANCH` from the current job assignment (never infer or hard-code them), then define this reusable mutation guard:
+
+```bash
+assert_assigned_branch() {
+  test "$(git rev-parse --show-toplevel)" = "${ASSIGNED_WORKTREE:?set from job assignment}"
+  test "$(git branch --show-current)" = "${ASSIGNED_BRANCH:?set from job assignment}"
+}
+```
+
+Call `assert_assigned_branch` immediately before every `git add`, `git commit`, pull, or push below.
+
 **TDD:** Every production change starts with a failing test. Watch it fail, then implement.
 
 **Commit trailer:** include `GitHub-Issue: <configured-owner>/<repository>#93` and `Linear: RM-598`. Agent attribution belongs in the commit body.
@@ -256,9 +267,11 @@ Expected: PASS.
 - **Step 6: Commit**
 
 ```bash
+assert_assigned_branch
 git add python/src/worktrees_hives/errors.py \
         python/src/worktrees_hives/research_roles.py \
         python/tests/test_research_roles.py
+assert_assigned_branch
 git commit -m "$(cat <<'EOF'
 feat(python): add Research Hive role schema (#93)
 
@@ -378,9 +391,11 @@ Suggested inputs/outputs (must be stable; fixture and catalog must match):
 
 ```bash
 cd python && python3 -m pytest tests/test_research_roles.py -q
+assert_assigned_branch
 git add python/src/worktrees_hives/research_roles.py \
         python/tests/test_research_roles.py \
         docs/examples/research-roles-v0.json
+assert_assigned_branch
 git commit -m "$(cat <<'EOF'
 feat(python): add four v0 Research Hive role catalog (#93)
 
@@ -508,7 +523,9 @@ Import `RoleCapabilityError` from `worktrees_hives.errors`.
 
 ```bash
 cd python && python3 -m pytest tests/test_research_roles.py -q
+assert_assigned_branch
 git add python/src/worktrees_hives/research_roles.py python/tests/test_research_roles.py
+assert_assigned_branch
 git commit -m "$(cat <<'EOF'
 feat(python): enforce Research Hive role capabilities (#93)
 
@@ -636,6 +653,7 @@ cd python && python3 -m pytest -q && python3 -m ruff check src tests && python3 
 ```
 
 ```bash
+assert_assigned_branch
 git add python/src/worktrees_hives/research_roles.py \
         python/src/worktrees_hives/__init__.py \
         python/src/worktrees_hives/errors.py \
@@ -644,6 +662,7 @@ git add python/src/worktrees_hives/research_roles.py \
         docs/examples/research-roles-v0.json \
         docs/superpowers/specs/2026-08-18-research-roles-design.md \
         docs/superpowers/plans/2026-08-18-research-roles.md
+assert_assigned_branch
 git commit -m "$(cat <<'EOF'
 feat(python): bind Research Hive roles to model identity (#93)
 
@@ -657,6 +676,30 @@ EOF
 ```
 
 Include the design spec and this plan in the last commit if they are not yet committed. If the controller already committed them, skip those paths.
+
+---
+
+## Session completion
+
+After the last task, run the complete gates, update the claimed Beads issue, and push from the assigned branch. Do not declare completion until the local and upstream SHAs match.
+
+```bash
+assert_assigned_branch
+cd "${ASSIGNED_WORKTREE:?set from job assignment}/python"
+python3 -m pytest -q
+python3 -m ruff check src tests
+python3 -m ruff format --check src tests
+python3 -m mypy --config-file pyproject.toml
+cd "${ASSIGNED_WORKTREE:?set from job assignment}"
+bd close "${CLAIMED_BEADS_ID:?set to the claimed task}"
+test -z "$(git status --porcelain)"
+assert_assigned_branch
+git pull --rebase
+assert_assigned_branch
+git push
+git status --short --branch
+test "$(git rev-parse HEAD)" = "$(git rev-parse '@{upstream}')"
+```
 
 ---
 
