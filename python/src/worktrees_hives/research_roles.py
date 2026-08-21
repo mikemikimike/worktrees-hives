@@ -498,6 +498,9 @@ _LAUNCH_CLI_NAMES: frozenset[str] = frozenset(
     {"worktrees-hives", "worktrees-hives.exe", "wh-orch", "wh-orch.exe"}
 )
 _HIVE_GLOBALS_WITH_VALUE: frozenset[str] = frozenset({"--state"})
+_CARGO_GLOBALS_WITH_VALUE: frozenset[str] = frozenset(
+    {"--color", "--config", "--explain", "--manifest-path", "-C", "-Z"}
+)
 _ENV_OPTIONS_WITH_VALUE: frozenset[str] = frozenset(
     {"-C", "--chdir", "-S", "--split-string", "-u", "--unset", "--argv0"}
 )
@@ -521,7 +524,13 @@ def assert_capability(role: ResearchRole, capability: ResearchCapability | str) 
 
 def classify_command(command: str | Sequence[str]) -> frozenset[ResearchCapability]:
     """Map structured argv to required capabilities, including common wrappers."""
-    argv = _unwrap_command(_command_to_argv(command))
+    raw_argv = _command_to_argv(command)
+    if not raw_argv:
+        return frozenset()
+
+    argv = _unwrap_command(raw_argv)
+    if argv is None:
+        return frozenset({ResearchCapability.MODIFY_CODE})
     if not argv:
         return frozenset()
 
@@ -529,7 +538,7 @@ def classify_command(command: str | Sequence[str]) -> frozenset[ResearchCapabili
 
     if executable in {"git", "git.exe"}:
         sub_i = _skip_git_global_options(argv, 1)
-        if sub_i < len(argv) and argv[sub_i].casefold() not in _GIT_READ_ONLY_SUBCOMMANDS:
+        if sub_i < len(argv) and not _git_command_is_read_only(argv, sub_i):
             return frozenset({ResearchCapability.MODIFY_CODE})
         return frozenset()
 
@@ -609,6 +618,47 @@ def _skip_git_global_options(argv: list[str], start: int) -> int:
     return index
 
 
+def _git_command_is_read_only(argv: list[str], subcommand_index: int) -> bool:
+    """Allow known inspection forms while treating unknown Git forms as mutating."""
+    subcommand = argv[subcommand_index].casefold()
+    arguments = argv[subcommand_index + 1 :]
+    if subcommand in _GIT_READ_ONLY_SUBCOMMANDS:
+        return True
+    if subcommand == "branch":
+        return not arguments or arguments == ["--show-current"]
+    if subcommand == "remote":
+        while arguments and arguments[0] in {"-v", "--verbose"}:
+            arguments = arguments[1:]
+        return not arguments or arguments[0] in {"get-url", "show"}
+    if subcommand == "config":
+        read_actions = {
+            "--get",
+            "--get-all",
+            "--get-regexp",
+            "--get-urlmatch",
+            "--list",
+            "-l",
+        }
+        write_actions = {
+            "--add",
+            "--edit",
+            "-e",
+            "--remove-section",
+            "--rename-section",
+            "--replace-all",
+            "--unset",
+            "--unset-all",
+            "remove-section",
+            "rename-section",
+            "set",
+            "unset",
+        }
+        return bool(read_actions.intersection(arguments)) and not write_actions.intersection(
+            arguments
+        )
+    return False
+
+
 def _option_takes_value(token: str, value_options: frozenset[str]) -> bool:
     """True for a value-taking flag or a unique long-option prefix (argparse allow_abbrev)."""
     if token in value_options:
@@ -649,22 +699,78 @@ def _skip_wrapper_options(
             return index + 1
         if not token.startswith("-") or token == "-":
             return index
-        if token in value_options:
+        if _option_takes_value(token, value_options):
             index += 2
         else:
             index += 1
     return index
 
 
-def _unwrap_command(argv: list[str]) -> list[str]:
+def _env_split_string_payload(argv: list[str], index: int) -> tuple[str, int] | None:
+    """Return an env split-string payload and the number of consumed argv items."""
+    token = argv[index]
+    if token == "-S":
+        return (argv[index + 1], 2) if index + 1 < len(argv) else None
+    if token.startswith("-S") and not token.startswith("--"):
+        return token[2:], 1
+    if not token.startswith("--"):
+        return None
+
+    option, separator, inline_value = token.partition("=")
+    if option != "--split-string" and not (option != "--" and "--split-string".startswith(option)):
+        return None
+    if separator:
+        return inline_value, 1
+    return (argv[index + 1], 2) if index + 1 < len(argv) else None
+
+
+def _unwrap_env(argv: list[str]) -> list[str] | None:
+    """Peel GNU env options, expanding split-string operands before classification."""
+    current = argv
+    index = 1
+    split_count = 0
+    while index < len(current):
+        token = current[index]
+        if token == "--":
+            return current[index + 1 :]
+        if not token.startswith("-") or token == "-":
+            while index < len(current) and "=" in current[index]:
+                index += 1
+            return current[index:]
+
+        split_payload = _env_split_string_payload(current, index)
+        if split_payload is not None:
+            payload, consumed = split_payload
+            split_count += 1
+            if split_count > 8:
+                return None
+            try:
+                expanded = _command_to_argv(payload)
+            except ValueError:
+                return None
+            current = current[:index] + expanded + current[index + consumed :]
+            continue
+
+        if _option_takes_value(token, _ENV_OPTIONS_WITH_VALUE):
+            if index + 1 >= len(current):
+                return None
+            index += 2
+        else:
+            index += 1
+    return []
+
+
+def _unwrap_command(argv: list[str]) -> list[str] | None:
     """Peel supported argv wrappers without inspecting ordinary command arguments."""
     current = argv
     while current:
         executable = _token_basename(current[0])
         if executable in {"env", "env.exe"}:
-            index = _skip_wrapper_options(current, 1, value_options=_ENV_OPTIONS_WITH_VALUE)
-            while index < len(current) and "=" in current[index]:
-                index += 1
+            unwrapped = _unwrap_env(current)
+            if unwrapped is None:
+                return None
+            current = unwrapped
+            continue
         elif executable in {"timeout", "timeout.exe"}:
             index = _skip_wrapper_options(current, 1, value_options=_TIMEOUT_OPTIONS_WITH_VALUE)
             index += 1  # duration
@@ -678,12 +784,11 @@ def _unwrap_command(argv: list[str]) -> list[str]:
 
 def _cargo_invokes_test(argv: list[str], start: int) -> bool:
     """Recognize ``cargo test`` even when a ``+toolchain`` prefix is present."""
-    for token in argv[start:]:
-        if token == "--":
-            return False
-        if token.casefold() == "test":
-            return True
-    return False
+    index = start
+    if index < len(argv) and argv[index].startswith("+"):
+        index += 1
+    index = _skip_leading_options(argv, index, value_options=_CARGO_GLOBALS_WITH_VALUE)
+    return index < len(argv) and argv[index].casefold() == "test"
 
 
 def _python_invokes_test_module(argv: list[str]) -> bool:

@@ -239,7 +239,11 @@ class TestCapabilityEnforcement:
         "command",
         [
             ["env", "git", "commit", "-m", "x"],
+            ["env", "-S", "git add victim"],
+            ["env", "-Sgit add victim"],
+            ["env", "--split-string=git add victim"],
             ["timeout", "10", "git", "stash", "pop"],
+            ["timeout", "--sig", "TERM", "10", "git", "add", "victim"],
             ["nice", "git", "clean", "-fd"],
             ["sh", "-c", "git commit -m x"],
             ["dash", "-c", "git commit -m x"],
@@ -331,6 +335,13 @@ class TestCapabilityEnforcement:
         assert classify_command(["sh", "-c", "git commit -m x"]) == modify
         assert classify_command(["dash", "-c", "git commit -m x"]) == modify
         assert classify_command(["git", "-C"]) == frozenset()
+        assert classify_command(["git", "branch", "--show-current"]) == frozenset()
+        assert classify_command(["git", "remote", "-v"]) == frozenset()
+        assert classify_command(["git", "config", "--get", "user.name"]) == frozenset()
+        assert classify_command(["git", "branch", "new-branch"]) == modify
+        assert classify_command(["git", "remote", "add", "origin", "url"]) == modify
+        assert classify_command(["git", "remote", "-v", "add", "origin", "url"]) == modify
+        assert classify_command(["git", "config", "user.name", "value"]) == modify
         assert classify_command(["echo", "git", "commit"]) == frozenset()
         assert classify_command(["echo", "worktrees-hives", "lab"]) == frozenset()
 
@@ -338,6 +349,7 @@ class TestCapabilityEnforcement:
         assert classify_command(["python", "-m", "unittest"]) == tests
         assert classify_command(["cargo", "test"]) == tests
         assert classify_command(["cargo", "+nightly", "test"]) == tests
+        assert classify_command(["cargo", "build", "--package", "test"]) == frozenset()
 
         assert classify_command(["lab", "run"]) == launch
         assert classify_command(["worktrees-hives", "--json", "lab", "run"]) == launch
