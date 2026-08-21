@@ -10,15 +10,23 @@
 
 **Worktree:** Use the isolated worktree and feature branch assigned to the current job. Never edit the default branch.
 
-Before running task commands, set `ASSIGNED_WORKTREE` and `ASSIGNED_BRANCH` from the current job assignment (never infer or hard-code them), then define this reusable mutation guard:
+Before running task commands, set `ASSIGNED_WORKTREE` and `ASSIGNED_BRANCH` from the current job assignment (never infer or hard-code them), then run this pre-edit checklist and define the reusable mutation guard:
 
 ```bash
 assert_assigned_branch() {
   test "$(git rev-parse --show-toplevel)" = "${ASSIGNED_WORKTREE:?set from job assignment}"
   test "$(git branch --show-current)" = "${ASSIGNED_BRANCH:?set from job assignment}"
 }
+
+cd "${ASSIGNED_WORKTREE:?set from job assignment}"
+assert_assigned_branch
+test -z "$(git status --porcelain)"
+git fetch
+git status --short --branch
+test "$(git rev-parse HEAD)" = "$(git rev-parse '@{upstream}')"
 ```
 
+Abort before editing if any checklist command fails or the status shows an unexpected remote.
 Call `assert_assigned_branch` immediately before every `git add`, `git commit`, pull, or push below.
 
 **TDD:** Every production change starts with a failing test. Watch it fail, then implement.

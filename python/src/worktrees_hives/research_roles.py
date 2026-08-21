@@ -492,7 +492,10 @@ _SHELL_EXECUTORS: frozenset[str] = frozenset(
         "zsh.exe",
     }
 )
-_PYTHON_INTERPRETERS: frozenset[str] = frozenset({"python", "python3", "python.exe", "python3.exe"})
+_PYTHON_INTERPRETERS: frozenset[str] = frozenset(
+    {"py", "py.exe", "python", "python3", "python.exe", "python3.exe"}
+)
+_PYTHON_SIMPLE_SHORT_OPTIONS: frozenset[str] = frozenset("bBdEhiIOPqRsSuvVx")
 _PYTHON_TEST_MODULES: frozenset[str] = frozenset({"pytest", "unittest"})
 _PYTHON_HIVE_MODULES: frozenset[str] = frozenset({"worktrees_hives.cli"})
 _LAUNCH_CLI_NAMES: frozenset[str] = frozenset(
@@ -538,7 +541,9 @@ def classify_command(command: str | Sequence[str]) -> frozenset[ResearchCapabili
     executable = _token_basename(argv[0])
 
     if executable in {"git", "git.exe"}:
-        sub_i = _skip_git_global_options(argv, 1)
+        sub_i, configuration_requires_modify = _skip_git_global_options(argv, 1)
+        if configuration_requires_modify:
+            return frozenset({ResearchCapability.MODIFY_CODE})
         if sub_i < len(argv) and not _git_command_is_read_only(argv, sub_i):
             return frozenset({ResearchCapability.MODIFY_CODE})
         return frozenset()
@@ -599,13 +604,18 @@ def _token_basename(token: str) -> str:
     return os.path.basename(token.rstrip("/\\")).casefold()
 
 
-def _skip_git_global_options(argv: list[str], start: int) -> int:
-    """Advance index past git global options to the subcommand."""
+def _skip_git_global_options(argv: list[str], start: int) -> tuple[int, bool]:
+    """Advance to the subcommand and flag unchecked config as modification-capable."""
     index = start
+    configuration_requires_modify = False
     while index < len(argv):
         token = argv[index]
         if not token.startswith("-"):
             break
+        if token == "-c" or (token.startswith("-c") and token != "-C"):
+            configuration_requires_modify = True
+        if token == "--config-env" or token.startswith("--config-env="):
+            configuration_requires_modify = True
         if token in {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"}:
             index += 2
             continue
@@ -616,7 +626,7 @@ def _skip_git_global_options(argv: list[str], start: int) -> int:
             index += 1
             continue
         index += 1
-    return index
+    return index, configuration_requires_modify
 
 
 def _git_command_is_read_only(argv: list[str], subcommand_index: int) -> bool:
@@ -739,7 +749,10 @@ def _unwrap_env(argv: list[str]) -> list[str] | None:
         token = current[index]
         if token == "--":
             return current[index + 1 :]
-        if not token.startswith("-") or token == "-":
+        if token == "-":
+            index += 1
+            continue
+        if not token.startswith("-"):
             while index < len(current) and "=" in current[index]:
                 index += 1
             return current[index:]
@@ -804,16 +817,26 @@ def _python_module_invocation(argv: list[str]) -> tuple[str, int] | None:
     index = 1
     while index < len(argv):
         token = argv[index]
-        if token == "-m":
-            if index + 1 >= len(argv):
-                return None
-            return argv[index + 1], index + 2
-        if token.startswith("-m"):
-            return token[2:], index + 1
-        if token == "-c" or token.startswith("-c") or token in {"-", "--"}:
+        if token in {"-", "--"}:
             return None
         if not token.startswith("-"):
             return None
+
+        if token.startswith("-") and not token.startswith("--"):
+            short_options = token[1:]
+            for option_index, option in enumerate(short_options):
+                if option == "m":
+                    inline_module = short_options[option_index + 1 :]
+                    if inline_module:
+                        return inline_module, index + 1
+                    if index + 1 >= len(argv):
+                        return None
+                    return argv[index + 1], index + 2
+                if option == "c":
+                    return None
+                if option not in _PYTHON_SIMPLE_SHORT_OPTIONS:
+                    break
+
         if token in {"-W", "-X", "--check-hash-based-pycs"}:
             index += 2
         else:

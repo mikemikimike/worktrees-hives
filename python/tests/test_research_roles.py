@@ -243,6 +243,7 @@ class TestCapabilityEnforcement:
             ["env", "-Sgit add victim"],
             ["env", "--split-string=git add victim"],
             ["env", "FOO=git", "env", "-S", "${FOO} add victim"],
+            ["env", "-", "git", "add", "victim"],
             ["timeout", "10", "git", "stash", "pop"],
             ["timeout", "--sig", "TERM", "10", "git", "add", "victim"],
             ["nice", "git", "clean", "-fd"],
@@ -351,12 +352,17 @@ class TestCapabilityEnforcement:
         assert classify_command(["git", "diff", "--output=victim.py"]) == modify
         assert classify_command(["git", "show", "--output", "victim.py"]) == modify
         assert classify_command(["git", "diff", "--", "--output=victim.py"]) == frozenset()
+        assert (
+            classify_command(["git", "-c", "diff.external=sh -c 'touch victim'", "diff"]) == modify
+        )
         assert classify_command(["echo", "git", "commit"]) == frozenset()
         assert classify_command(["echo", "worktrees-hives", "lab"]) == frozenset()
 
         assert classify_command(["py.test", "-q"]) == tests
         assert classify_command(["python3", "-m", "pytest"]) == tests
         assert classify_command(["python3", "-mpytest"]) == tests
+        assert classify_command(["python3", "-Bm", "pytest"]) == tests
+        assert classify_command(["python3", "-Bmpytest"]) == tests
         assert classify_command(["python", "-m", "unittest"]) == tests
         assert classify_command(["python", "helper.py", "-m", "pytest"]) == frozenset()
         assert classify_command(["python", "-c", "pass", "-m", "pytest"]) == frozenset()
@@ -368,6 +374,9 @@ class TestCapabilityEnforcement:
         assert classify_command(["lab", "run"]) == launch
         assert classify_command(["python", "-m", "worktrees_hives.cli", "lab", "run"]) == launch
         assert classify_command(["python", "-mworktrees_hives.cli", "lab", "run"]) == launch
+        assert classify_command(["python", "-Bm", "worktrees_hives.cli", "lab", "run"]) == launch
+        assert classify_command(["py", "-m", "worktrees_hives.cli", "lab", "run"]) == launch
+        assert classify_command(["py.exe", "-m", "worktrees_hives.cli", "lab", "run"]) == launch
         assert classify_command(["worktrees-hives", "--json", "lab", "run"]) == launch
         assert classify_command(["wh-orch", "--state", "/tmp/lab", "lab", "run"]) == launch
         assert classify_command(["worktrees-hives", "--s", "/tmp/x", "lab", "run"]) == launch
