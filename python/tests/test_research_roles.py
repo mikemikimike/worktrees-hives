@@ -236,11 +236,15 @@ class TestCapabilityEnforcement:
             assert_role_command_allowed(role, ["git", "apply", "change.patch"])
 
     def test_verifier_cannot_use_command_launching_git_options(self) -> None:
-        with pytest.raises(RoleCapabilityError, match="modify_code"):
-            assert_role_command_allowed(
-                v0_role("verification_agent"),
-                ["git", "grep", "--open-files-in-pager=sh -c 'touch victim'", "pattern"],
-            )
+        for option in (
+            "--open-files-in-pager=sh -c 'touch victim'",
+            "--open-files-in-p=sh -c 'touch victim'",
+        ):
+            with pytest.raises(RoleCapabilityError, match="modify_code"):
+                assert_role_command_allowed(
+                    v0_role("verification_agent"),
+                    ["git", "grep", option, "pattern"],
+                )
 
     @pytest.mark.parametrize(
         "command",
@@ -305,15 +309,15 @@ class TestCapabilityEnforcement:
             assert_role_command_allowed(modifier_without_tests, ["sh", "-c", "pytest -q"])
 
     def test_versioned_python_names_cannot_bypass_capability_checks(self) -> None:
-        with pytest.raises(RoleCapabilityError, match="launch_experiments"):
-            assert_role_command_allowed(
-                v0_role("verification_agent"),
-                ["python3.14", "-m", "worktrees_hives.cli", "lab", "run"],
-            )
-        with pytest.raises(RoleCapabilityError, match="execute_tests"):
-            assert_role_command_allowed(
-                v0_role("artifact_agent"), ["python3.14.exe", "-m", "pytest"]
-            )
+        for executable in ("python3.14", "pythonw.exe", "pythonw3.14.exe"):
+            with pytest.raises(RoleCapabilityError, match="launch_experiments"):
+                assert_role_command_allowed(
+                    v0_role("verification_agent"),
+                    [executable, "-m", "worktrees_hives.cli", "lab", "run"],
+                )
+        for executable in ("python3.14.exe", "pythonw", "pythonw3.14"):
+            with pytest.raises(RoleCapabilityError, match="execute_tests"):
+                assert_role_command_allowed(v0_role("artifact_agent"), [executable, "-m", "pytest"])
 
     @pytest.mark.parametrize("module", ["pytest.__main__", "unittest.__main__"])
     def test_test_package_main_modules_require_execute_tests(self, module: str) -> None:
@@ -425,6 +429,10 @@ class TestCapabilityEnforcement:
             )
             == modify
         )
+        assert (
+            classify_command(["git", "grep", "--open-files-in-p=sh -c 'touch victim'", "pattern"])
+            == modify
+        )
         assert classify_command(["git", "grep", "-Osh", "pattern"]) == modify
         assert classify_command(["git", "diff", "--", "--output=victim.py"]) == frozenset()
         assert (
@@ -437,6 +445,10 @@ class TestCapabilityEnforcement:
         assert classify_command(["python3", "-m", "pytest"]) == tests
         assert classify_command(["python3.14", "-m", "pytest"]) == tests
         assert classify_command(["python3.14.exe", "-m", "pytest"]) == tests
+        assert classify_command(["pythonw", "-m", "pytest"]) == tests
+        assert classify_command(["pythonw.exe", "-m", "pytest"]) == tests
+        assert classify_command(["pythonw3.14", "-m", "pytest"]) == tests
+        assert classify_command(["pythonw3.14.exe", "-m", "pytest"]) == tests
         assert classify_command(["python3", "-mpytest"]) == tests
         assert classify_command(["python3", "-Bm", "pytest"]) == tests
         assert classify_command(["python3", "-Bmpytest"]) == tests

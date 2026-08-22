@@ -31,7 +31,7 @@ Call `assert_assigned_branch` immediately before every `git add`, `git commit`, 
 
 **TDD:** Every production change starts with a failing test. Watch it fail, then implement.
 
-**Commit trailer:** include `GitHub-Issue: <configured-owner>/<repository>#93` and `Linear: RM-598`. Agent attribution belongs in the commit body.
+**Commit trailer:** include `GitHub-Issue: <configured-owner>/<repository>#93` and `Linear: RM-598`. Agent attribution belongs in the commit body and must use the executing agent identity supplied by the current job; replace `<executing-agent-id>` below rather than copying an identity from this plan.
 
 **Quality gates after each task (from the worktree `python/` directory):**
 
@@ -287,7 +287,7 @@ Versioned ResearchRole + fail-closed capability defaults.
 
 GitHub-Issue: <configured-owner>/<repository>#93
 Linear: RM-598
-Agent: grok-4.6 (subagent-driven-development task 1)
+Agent: <executing-agent-id> (task 1)
 EOF
 )"
 ```
@@ -411,7 +411,7 @@ Declarative coordinator, experiment, verification, and artifact roles.
 
 GitHub-Issue: <configured-owner>/<repository>#93
 Linear: RM-598
-Agent: grok-4.6 (subagent-driven-development task 2)
+Agent: <executing-agent-id> (task 2)
 EOF
 )"
 ```
@@ -542,7 +542,7 @@ Fail-closed gate composes with lab never-merge policy.
 
 GitHub-Issue: <configured-owner>/<repository>#93
 Linear: RM-598
-Agent: grok-4.6 (subagent-driven-development task 3)
+Agent: <executing-agent-id> (task 3)
 EOF
 )"
 ```
@@ -679,7 +679,7 @@ RoleBinding provenance plus envelope documentation.
 
 GitHub-Issue: <configured-owner>/<repository>#93
 Linear: RM-598
-Agent: grok-4.6 (subagent-driven-development task 4)
+Agent: <executing-agent-id> (task 4)
 EOF
 )"
 ```

@@ -494,7 +494,16 @@ _SHELL_EXECUTORS: frozenset[str] = frozenset(
     }
 )
 _PYTHON_INTERPRETERS: frozenset[str] = frozenset(
-    {"py", "py.exe", "python", "python3", "python.exe", "python3.exe"}
+    {
+        "py",
+        "py.exe",
+        "python",
+        "python3",
+        "python.exe",
+        "python3.exe",
+        "pythonw",
+        "pythonw.exe",
+    }
 )
 _PYTHON_SIMPLE_SHORT_OPTIONS: frozenset[str] = frozenset("bBdEhiIOPqRsSuvVx")
 _PYTHON_TEST_MODULES: frozenset[str] = frozenset(
@@ -620,14 +629,17 @@ def _token_basename(token: str) -> str:
 
 
 def _is_python_interpreter(executable: str) -> bool:
-    """Recognize standard and numerically versioned Python executable names."""
+    """Recognize console/windowed and numerically versioned Python executables."""
     if executable in _PYTHON_INTERPRETERS:
         return True
     name = executable.removesuffix(".exe")
-    if not name.startswith("python"):
-        return False
-    version = name.removeprefix("python")
-    return bool(version) and all(part.isascii() and part.isdecimal() for part in version.split("."))
+    for prefix in ("python", "pythonw"):
+        if not name.startswith(prefix):
+            continue
+        version = name.removeprefix(prefix)
+        if version and all(part.isascii() and part.isdecimal() for part in version.split(".")):
+            return True
+    return False
 
 
 def _skip_git_global_options(argv: list[str], start: int) -> tuple[int, bool]:
@@ -665,9 +677,7 @@ def _git_command_is_read_only(argv: list[str], subcommand_index: int) -> bool:
         if token == "--output" or token.startswith("--output="):
             return False
         if subcommand == "grep" and (
-            token.startswith("-O")
-            or token == "--open-files-in-pager"
-            or token.startswith("--open-files-in-pager=")
+            token.startswith("-O") or _is_git_long_option_prefix(token, "--open-files-in-pager")
         ):
             return False
     if subcommand in _GIT_READ_ONLY_SUBCOMMANDS:
@@ -705,6 +715,12 @@ def _git_command_is_read_only(argv: list[str], subcommand_index: int) -> bool:
             arguments
         )
     return False
+
+
+def _is_git_long_option_prefix(token: str, option: str) -> bool:
+    """Fail closed when a Git long-option token abbreviates ``option``."""
+    name = token.partition("=")[0]
+    return name.startswith("--") and option.startswith(name)
 
 
 def _option_takes_value(token: str, value_options: frozenset[str]) -> bool:
