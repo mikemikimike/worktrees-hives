@@ -774,20 +774,21 @@ def _env_split_string_payload(argv: list[str], index: int) -> tuple[str, int] | 
 
 
 def _unwrap_env(argv: list[str]) -> list[str] | None:
-    """Peel GNU env options, expanding split-string operands before classification."""
+    """Peel GNU env options while rejecting behavior-changing assignments."""
     current = argv
     index = 1
     split_count = 0
     while index < len(current):
         token = current[index]
         if token == "--":
-            return current[index + 1 :]
+            index += 1
+            continue
         if token == "-":
             index += 1
             continue
         if not token.startswith("-"):
-            while index < len(current) and "=" in current[index]:
-                index += 1
+            if "=" in token:
+                return None
             return current[index:]
 
         split_payload = _env_split_string_payload(current, index)

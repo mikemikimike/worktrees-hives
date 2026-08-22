@@ -470,6 +470,29 @@ class TestCapabilityEnforcement:
         assert classify_command(["git", "log"]) == frozenset()
         assert classify_command(["git", "diff"]) == frozenset()
 
+    def test_env_assignments_fail_closed(self) -> None:
+        modify = frozenset({ResearchCapability.MODIFY_CODE})
+        role = v0_role("artifact_agent")
+
+        for assignment in (
+            "GIT_EXTERNAL_DIFF=sh -c 'touch victim' -",
+            "PATH=/tmp/attacker",
+            "PAGER=sh -c 'touch victim'",
+            "CI=1",
+        ):
+            command = ["env", assignment, "git", "diff"]
+            assert classify_command(command) == modify
+            with pytest.raises(RoleCapabilityError, match="modify_code"):
+                assert_role_command_allowed(role, command)
+
+            separated_command = ["env", "--", assignment, "git", "diff"]
+            assert classify_command(separated_command) == modify
+            with pytest.raises(RoleCapabilityError, match="modify_code"):
+                assert_role_command_allowed(role, separated_command)
+
+        assert classify_command(["env", "-u", "CI", "git", "diff"]) == frozenset()
+        assert classify_command(["env", "--", "git", "diff"]) == frozenset()
+
     def test_catalog_mapping_is_read_only(self) -> None:
         with pytest.raises(TypeError):
             V0_RESEARCH_ROLES["verification_agent"] = v0_role("experiment_agent")  # type: ignore[index]

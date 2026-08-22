@@ -521,7 +521,7 @@ Classification rules (must match tests):
 - Normalize via the same argv split idea as `lab_run._command_to_argv` (you may duplicate a tiny helper; do not export lab_run privates).
 - Detect `git` / `git.exe`, parse supported global options, and inspect the subcommand. Unchecked runtime configuration (`-c` / `--config-env`) requires `modify_code`.
 - Git classification is deny-by-default: only `_GIT_READ_ONLY_SUBCOMMANDS` and the explicitly inspected read-only forms require no capability. Options that write output or launch a selected process, such as `grep -O` / `--open-files-in-pager`, map to `modify_code`. Every other subcommand maps to `modify_code`, including `add`, `am`, `apply`, `checkout`, `cherry-pick`, `clean`, `commit`, `merge`, `mv`, `pull`, `rebase`, `reset`, `restore`, `revert`, `rm`, `stash`, and `switch`. Basename `patch` also maps to `modify_code`.
-- Supported command wrappers are parsed conservatively; ambiguous short-option clusters and unsupported GNU `env -S` escapes fail closed as `modify_code`.
+- Supported command wrappers are parsed conservatively; environment assignments, ambiguous short-option clusters, and unsupported GNU `env -S` escapes fail closed as `modify_code`.
 - `execute_tests`: basename `pytest`; or an unversioned/versioned Python interpreter with `-m pytest`, `-m pytest.__main__`, `-m unittest`, or `-m unittest.__main__`; or `cargo test` (after cargo global options, treat `test` as the cargo subcommand).
 - `launch_experiments`: argv `worktrees-hives lab …`, `wh-orch lab …`, an unversioned/versioned Python interpreter running `-m worktrees_hives.cli lab …`, or first token `lab`.
 - `git status` / `git log` / `git diff` → empty set.
