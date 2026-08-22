@@ -348,9 +348,10 @@ _V0_ROLE_DOCUMENTS: tuple[dict[str, Any], ...] = (
 def _validate_schema_version(value: object) -> None:
     if type(value) is not int:
         raise ResearchRoleValidationError("schema_version must be an int")
-    if value != RESEARCH_ROLE_SCHEMA_VERSION:
+    schema_version: int = value
+    if schema_version != RESEARCH_ROLE_SCHEMA_VERSION:
         raise ResearchRoleValidationError(
-            f"unsupported schema_version {value} (expected {RESEARCH_ROLE_SCHEMA_VERSION})"
+            f"unsupported schema_version {schema_version} (expected {RESEARCH_ROLE_SCHEMA_VERSION})"
         )
 
 
