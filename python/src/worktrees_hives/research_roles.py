@@ -497,6 +497,8 @@ _PYTHON_INTERPRETERS: frozenset[str] = frozenset(
     {
         "py",
         "py.exe",
+        "pyw",
+        "pyw.exe",
         "python",
         "python3",
         "python.exe",
@@ -563,8 +565,11 @@ def classify_command(command: str | Sequence[str]) -> frozenset[ResearchCapabili
         sub_i, configuration_requires_modify = _skip_git_global_options(argv, 1)
         if configuration_requires_modify:
             return frozenset({ResearchCapability.MODIFY_CODE})
-        if sub_i < len(argv) and not _git_command_is_read_only(argv, sub_i):
-            return frozenset({ResearchCapability.MODIFY_CODE})
+        if sub_i < len(argv):
+            if _git_invokes_external_process(argv, sub_i):
+                return _SHELL_REQUIRED_CAPABILITIES
+            if not _git_command_is_read_only(argv, sub_i):
+                return frozenset({ResearchCapability.MODIFY_CODE})
         return frozenset()
 
     if executable in _SHELL_EXECUTORS:
@@ -584,6 +589,7 @@ def classify_command(command: str | Sequence[str]) -> frozenset[ResearchCapabili
                 return frozenset({ResearchCapability.EXECUTE_TESTS})
             if module in _PYTHON_HIVE_MODULES and _hive_cli_invokes_lab(argv, arguments_start):
                 return frozenset({ResearchCapability.LAUNCH_EXPERIMENTS})
+        return _SHELL_REQUIRED_CAPABILITIES
 
     if executable in {"cargo", "cargo.exe"} and _cargo_invokes_test(argv, 1):
         return frozenset({ResearchCapability.EXECUTE_TESTS})
@@ -676,10 +682,6 @@ def _git_command_is_read_only(argv: list[str], subcommand_index: int) -> bool:
             break
         if token == "--output" or token.startswith("--output="):
             return False
-        if subcommand == "grep" and (
-            token.startswith("-O") or _is_git_long_option_prefix(token, "--open-files-in-pager")
-        ):
-            return False
     if subcommand in _GIT_READ_ONLY_SUBCOMMANDS:
         return True
     if subcommand == "branch":
@@ -714,6 +716,24 @@ def _git_command_is_read_only(argv: list[str], subcommand_index: int) -> bool:
         return bool(read_actions.intersection(arguments)) and not write_actions.intersection(
             arguments
         )
+    return False
+
+
+def _git_invokes_external_process(argv: list[str], subcommand_index: int) -> bool:
+    """Detect read-oriented Git options that can launch configured commands."""
+    subcommand = argv[subcommand_index].casefold()
+    for token in argv[subcommand_index + 1 :]:
+        if token == "--":
+            break
+        if subcommand == "grep" and (
+            token.startswith("-O") or _is_git_long_option_prefix(token, "--open-files-in-pager")
+        ):
+            return True
+        if subcommand == "cat-file" and (
+            _is_git_long_option_prefix(token, "--filters")
+            or _is_git_long_option_prefix(token, "--textconv")
+        ):
+            return True
     return False
 
 
