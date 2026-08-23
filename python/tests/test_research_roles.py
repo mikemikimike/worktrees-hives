@@ -257,12 +257,16 @@ class TestCapabilityEnforcement:
             ["env", "FOO=git", "env", "-S", "${FOO} add victim"],
             ["env", "-", "git", "add", "victim"],
             ["env", "-a", "spoof", "git", "add", "victim"],
+            ["env", "-P", "/opt/tools", "git", "add", "victim"],
             ["timeout", "10", "git", "stash", "pop"],
             ["timeout", "--sig", "TERM", "10", "git", "add", "victim"],
             ["timeout", "-vk", "2", "3", "git", "add", "victim"],
             ["nice", "git", "clean", "-fd"],
             ["sh", "-c", "git commit -m x"],
+            ["ash", "-c", "git commit -m x"],
+            ["csh", "-c", "git commit -m x"],
             ["dash", "-c", "git commit -m x"],
+            ["tcsh", "-c", "git commit -m x"],
         ],
     )
     def test_verifier_cannot_bypass_modify_gate_with_wrappers(self, command: list[str]) -> None:
@@ -298,6 +302,15 @@ class TestCapabilityEnforcement:
             ["git", "--paginate", "log"],
             ["git", "diff", "--ext-diff"],
             ["git", "show", "--textconv", "HEAD:victim"],
+            ["git", "diff"],
+            ["git", "log", "-p"],
+            ["git", "show", "HEAD:victim"],
+            ["git", "grep", "--textconv", "pattern"],
+            ["git", "blame", "--textconv", "HEAD:victim"],
+            ["git", "help", "status"],
+            ["git", "remote", "show", "origin"],
+            ["git", "log", "--show-signature"],
+            ["git", "show", "--format=%G?", "HEAD"],
             ["env", "X=1", "worktrees-hives", "lab", "run"],
         ):
             with pytest.raises(RoleCapabilityError, match="launch_experiments"):
@@ -354,13 +367,27 @@ class TestCapabilityEnforcement:
                 assert_role_command_allowed(launcher_without_modify, command)
 
     def test_versioned_python_names_cannot_bypass_capability_checks(self) -> None:
-        for executable in ("python3.14", "pythonw.exe", "pythonw3.14.exe", "pyw.exe"):
+        for executable in (
+            "python3.14",
+            "python3.14t",
+            "pythonw.exe",
+            "pythonw3.14.exe",
+            "pythonw3.14t.exe",
+            "pypy3",
+            "pyw.exe",
+        ):
             with pytest.raises(RoleCapabilityError, match="launch_experiments"):
                 assert_role_command_allowed(
                     v0_role("verification_agent"),
                     [executable, "-m", "worktrees_hives.cli", "lab", "run"],
                 )
-        for executable in ("python3.14.exe", "pythonw", "pythonw3.14", "pyw"):
+        for executable in (
+            "python3.14.exe",
+            "pythonw",
+            "pythonw3.14",
+            "pypy3.11.exe",
+            "pyw",
+        ):
             with pytest.raises(RoleCapabilityError, match="execute_tests"):
                 assert_role_command_allowed(v0_role("artifact_agent"), [executable, "-m", "pytest"])
 
@@ -457,7 +484,10 @@ class TestCapabilityEnforcement:
             == modify
         )
         assert classify_command(["sh", "-c", "git commit -m x"]) == shell
+        assert classify_command(["ash", "-c", "git commit -m x"]) == shell
+        assert classify_command(["csh", "-c", "git commit -m x"]) == shell
         assert classify_command(["dash", "-c", "git commit -m x"]) == shell
+        assert classify_command(["tcsh", "-c", "git commit -m x"]) == shell
         assert classify_command(["git", "-C"]) == frozenset()
         assert classify_command(["git", "branch", "--show-current"]) == frozenset()
         assert classify_command(["git", "remote", "-v"]) == frozenset()
@@ -466,8 +496,8 @@ class TestCapabilityEnforcement:
         assert classify_command(["git", "remote", "add", "origin", "url"]) == modify
         assert classify_command(["git", "remote", "-v", "add", "origin", "url"]) == modify
         assert classify_command(["git", "config", "user.name", "value"]) == modify
-        assert classify_command(["git", "diff", "--output=victim.py"]) == modify
-        assert classify_command(["git", "show", "--output", "victim.py"]) == modify
+        assert classify_command(["git", "diff", "--output=victim.py"]) == shell
+        assert classify_command(["git", "show", "--output", "victim.py"]) == shell
         assert (
             classify_command(
                 ["git", "grep", "--open-files-in-pager=sh -c 'touch victim'", "pattern"]
@@ -484,14 +514,29 @@ class TestCapabilityEnforcement:
         assert classify_command(["git", "diff", "--ext-diff"]) == shell
         assert classify_command(["git", "show", "--textconv", "HEAD:victim"]) == shell
         assert classify_command(["git", "log", "--ext", "-p"]) == shell
+        assert classify_command(["git", "diff"]) == shell
+        assert classify_command(["git", "log", "-p"]) == shell
+        assert classify_command(["git", "show", "HEAD:victim"]) == shell
+        assert classify_command(["git", "grep", "--textc", "pattern"]) == shell
+        assert classify_command(["git", "blame", "--textconv", "HEAD:victim"]) == shell
+        assert classify_command(["git", "help", "status"]) == shell
+        assert classify_command(["git", "remote", "show", "origin"]) == shell
+        assert classify_command(["git", "remote", "show", "-n", "origin"]) == frozenset()
+        assert classify_command(["git", "log", "--show-sign", "HEAD"]) == shell
+        assert classify_command(["git", "show", "--format=%G?", "HEAD"]) == shell
+        assert classify_command(["git", "diff", "--no-ext-diff", "--no-textconv"]) == frozenset()
+        assert classify_command(["git", "show", "--no-textconv", "HEAD"]) == frozenset()
+        assert classify_command(["git", "log", "-p", "--no-textconv"]) == frozenset()
         assert classify_command(["git", "cat-file", "-p", "HEAD:victim"]) == frozenset()
-        assert classify_command(["git", "diff", "--", "--output=victim.py"]) == frozenset()
+        assert classify_command(["git", "diff", "--", "--output=victim.py"]) == shell
         assert (
             classify_command(["git", "-c", "diff.external=sh -c 'touch victim'", "diff"]) == shell
         )
         assert classify_command(["git", "--pag", "log"]) == shell
         assert classify_command(["echo", "git", "commit"]) == frozenset()
         assert classify_command(["echo", "worktrees-hives", "lab"]) == frozenset()
+        assert classify_command(["node", "-e", "process.exit(0)"]) == frozenset()
+        assert classify_command(["cargo", "run"]) == frozenset()
 
         assert classify_command(["py.test", "-q"]) == tests
         assert classify_command(["python3", "-m", "pytest"]) == tests
@@ -501,6 +546,10 @@ class TestCapabilityEnforcement:
         assert classify_command(["pythonw.exe", "-m", "pytest"]) == tests
         assert classify_command(["pythonw3.14", "-m", "pytest"]) == tests
         assert classify_command(["pythonw3.14.exe", "-m", "pytest"]) == tests
+        assert classify_command(["python3.14t", "-m", "pytest"]) == tests
+        assert classify_command(["pythonw3.14t.exe", "-m", "pytest"]) == tests
+        assert classify_command(["pypy3", "-m", "pytest"]) == tests
+        assert classify_command(["pypy3.11.exe", "-m", "pytest"]) == tests
         assert classify_command(["pyw", "-m", "pytest"]) == tests
         assert classify_command(["pyw.exe", "-m", "pytest"]) == tests
         assert classify_command(["python3", "-mpytest"]) == tests
@@ -552,7 +601,6 @@ class TestCapabilityEnforcement:
             == frozenset()
         )
         assert classify_command(["git", "log"]) == frozenset()
-        assert classify_command(["git", "diff"]) == frozenset()
 
     def test_env_assignments_require_full_capabilities(self) -> None:
         shell = frozenset(
@@ -580,8 +628,8 @@ class TestCapabilityEnforcement:
             with pytest.raises(RoleCapabilityError, match="execute_tests"):
                 assert_role_command_allowed(role, separated_command)
 
-        assert classify_command(["env", "-u", "CI", "git", "diff"]) == frozenset()
-        assert classify_command(["env", "--", "git", "diff"]) == frozenset()
+        assert classify_command(["env", "-u", "CI", "git", "diff"]) == shell
+        assert classify_command(["env", "--", "git", "diff"]) == shell
 
     def test_catalog_mapping_is_read_only(self) -> None:
         with pytest.raises(TypeError):

@@ -473,10 +473,14 @@ _SHELL_EXECUTORS: frozenset[str] = frozenset(
     {
         "bash",
         "bash.exe",
+        "ash",
+        "ash.exe",
         "busybox",
         "busybox.exe",
         "cmd",
         "cmd.exe",
+        "csh",
+        "csh.exe",
         "dash",
         "dash.exe",
         "fish",
@@ -489,6 +493,8 @@ _SHELL_EXECUTORS: frozenset[str] = frozenset(
         "pwsh.exe",
         "sh",
         "sh.exe",
+        "tcsh",
+        "tcsh.exe",
         "zsh",
         "zsh.exe",
     }
@@ -505,6 +511,10 @@ _PYTHON_INTERPRETERS: frozenset[str] = frozenset(
         "python3.exe",
         "pythonw",
         "pythonw.exe",
+        "pypy",
+        "pypy.exe",
+        "pypy3",
+        "pypy3.exe",
     }
 )
 _PYTHON_SIMPLE_SHORT_OPTIONS: frozenset[str] = frozenset("bBdEhiIOPqRsSuvVx")
@@ -520,7 +530,7 @@ _CARGO_GLOBALS_WITH_VALUE: frozenset[str] = frozenset(
     {"--color", "--config", "--explain", "--manifest-path", "-C", "-Z"}
 )
 _ENV_OPTIONS_WITH_VALUE: frozenset[str] = frozenset(
-    {"-a", "--argv0", "-C", "--chdir", "-S", "--split-string", "-u", "--unset"}
+    {"-a", "--argv0", "-C", "--chdir", "-P", "-S", "--split-string", "-u", "--unset"}
 )
 _TIMEOUT_OPTIONS_WITH_VALUE: frozenset[str] = frozenset({"-k", "--kill-after", "-s", "--signal"})
 _NICE_OPTIONS_WITH_VALUE: frozenset[str] = frozenset({"-n", "--adjustment"})
@@ -645,10 +655,12 @@ def _is_python_interpreter(executable: str) -> bool:
     if executable in _PYTHON_INTERPRETERS:
         return True
     name = executable.removesuffix(".exe")
-    for prefix in ("python", "pythonw"):
+    for prefix in ("python", "pythonw", "pypy"):
         if not name.startswith(prefix):
             continue
         version = name.removeprefix(prefix)
+        if version.endswith("t"):
+            version = version[:-1]
         if version and all(part.isascii() and part.isdecimal() for part in version.split(".")):
             return True
     return False
@@ -730,11 +742,35 @@ def _git_command_is_read_only(argv: list[str], subcommand_index: int) -> bool:
 def _git_invokes_external_process(argv: list[str], subcommand_index: int) -> bool:
     """Detect read-oriented Git options that can launch configured commands."""
     subcommand = argv[subcommand_index].casefold()
+    arguments: list[str] = []
     for token in argv[subcommand_index + 1 :]:
         if token == "--":
             break
+        arguments.append(token)
+
+    if subcommand == "help":
+        return True
+    if subcommand == "remote" and _git_remote_show_queries(arguments):
+        return True
+    if subcommand == "diff" and not (
+        _git_has_long_option(arguments, "--no-ext-diff")
+        and _git_has_long_option(arguments, "--no-textconv")
+    ):
+        return True
+    if subcommand == "show" and not _git_has_long_option(arguments, "--no-textconv"):
+        return True
+    if (
+        subcommand == "log"
+        and _git_log_requests_patch(arguments)
+        and not _git_has_long_option(arguments, "--no-textconv")
+    ):
+        return True
+
+    for token in arguments:
         if subcommand == "grep" and (
-            token.startswith("-O") or _is_git_long_option_prefix(token, "--open-files-in-pager")
+            token.startswith("-O")
+            or _is_git_long_option_prefix(token, "--open-files-in-pager")
+            or _is_git_long_option_prefix(token, "--textconv")
         ):
             return True
         if subcommand == "cat-file" and (
@@ -747,7 +783,41 @@ def _git_invokes_external_process(argv: list[str], subcommand_index: int) -> boo
             or _is_git_long_option_prefix(token, "--textconv")
         ):
             return True
+        if subcommand == "blame" and _is_git_long_option_prefix(token, "--textconv"):
+            return True
+        if subcommand in {"log", "show"} and (
+            _is_git_long_option_prefix(token, "--show-signature") or "%G" in token
+        ):
+            return True
     return False
+
+
+def _git_has_long_option(arguments: list[str], option: str) -> bool:
+    """Return whether an argument enables ``option`` or an accepted prefix."""
+    return any(_is_git_long_option_prefix(token, option) for token in arguments)
+
+
+def _git_log_requests_patch(arguments: list[str]) -> bool:
+    """Detect log modes that render a patch and may run textconv filters."""
+    enabled = False
+    for token in arguments:
+        if token in {"-s", "--no-patch"}:
+            enabled = False
+        elif token in {"-p", "-u"} or token.startswith("--patch"):
+            enabled = True
+    return enabled
+
+
+def _git_remote_show_queries(arguments: list[str]) -> bool:
+    """Detect ``remote show`` forms that contact a configured transport."""
+    while arguments and arguments[0] in {"-v", "--verbose"}:
+        arguments = arguments[1:]
+    if not arguments or arguments[0] != "show":
+        return False
+    show_arguments = arguments[1:]
+    if not show_arguments or any(token in {"-n", "--no-query"} for token in show_arguments):
+        return False
+    return any(not token.startswith("-") for token in show_arguments)
 
 
 def _is_git_long_option_prefix(token: str, option: str) -> bool:
