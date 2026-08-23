@@ -555,16 +555,16 @@ def classify_command(command: str | Sequence[str]) -> frozenset[ResearchCapabili
 
     argv = _unwrap_command(raw_argv)
     if argv is None:
-        return frozenset({ResearchCapability.MODIFY_CODE})
+        return _SHELL_REQUIRED_CAPABILITIES
     if not argv:
         return frozenset()
 
     executable = _token_basename(argv[0])
 
     if executable in {"git", "git.exe"}:
-        sub_i, configuration_requires_modify = _skip_git_global_options(argv, 1)
-        if configuration_requires_modify:
-            return frozenset({ResearchCapability.MODIFY_CODE})
+        sub_i, configuration_may_execute = _skip_git_global_options(argv, 1)
+        if configuration_may_execute:
+            return _SHELL_REQUIRED_CAPABILITIES
         if sub_i < len(argv):
             if _git_invokes_external_process(argv, sub_i):
                 return _SHELL_REQUIRED_CAPABILITIES
@@ -584,21 +584,27 @@ def classify_command(command: str | Sequence[str]) -> frozenset[ResearchCapabili
     if _is_python_interpreter(executable):
         module_invocation = _python_module_invocation(argv)
         if module_invocation is not None:
-            module, arguments_start = module_invocation
+            module, arguments_start, interactive = module_invocation
+            if interactive:
+                return _SHELL_REQUIRED_CAPABILITIES
             if module in _PYTHON_TEST_MODULES:
                 return frozenset({ResearchCapability.EXECUTE_TESTS})
-            if module in _PYTHON_HIVE_MODULES and _hive_cli_invokes_lab(argv, arguments_start):
-                return frozenset({ResearchCapability.LAUNCH_EXPERIMENTS})
+            if module in _PYTHON_HIVE_MODULES:
+                capabilities = _hive_cli_capabilities(argv, arguments_start)
+                if capabilities:
+                    return capabilities
         return _SHELL_REQUIRED_CAPABILITIES
 
     if executable in {"cargo", "cargo.exe"} and _cargo_invokes_test(argv, 1):
         return frozenset({ResearchCapability.EXECUTE_TESTS})
 
     if executable in {"lab", "lab.exe"}:
-        return frozenset({ResearchCapability.LAUNCH_EXPERIMENTS})
+        return _lab_capabilities(argv, 1)
 
-    if executable in _LAUNCH_CLI_NAMES and _hive_cli_invokes_lab(argv, 1):
-        return frozenset({ResearchCapability.LAUNCH_EXPERIMENTS})
+    if executable in _LAUNCH_CLI_NAMES:
+        capabilities = _hive_cli_capabilities(argv, 1)
+        if capabilities:
+            return capabilities
 
     return frozenset()
 
@@ -649,17 +655,19 @@ def _is_python_interpreter(executable: str) -> bool:
 
 
 def _skip_git_global_options(argv: list[str], start: int) -> tuple[int, bool]:
-    """Advance to the subcommand and flag unchecked config as modification-capable."""
+    """Advance to the subcommand and flag config that may launch a process."""
     index = start
-    configuration_requires_modify = False
+    configuration_may_execute = False
     while index < len(argv):
         token = argv[index]
         if not token.startswith("-"):
             break
         if token == "-c" or (token.startswith("-c") and token != "-C"):
-            configuration_requires_modify = True
+            configuration_may_execute = True
         if token == "--config-env" or token.startswith("--config-env="):
-            configuration_requires_modify = True
+            configuration_may_execute = True
+        if token == "-p" or _is_git_long_option_prefix(token, "--paginate"):
+            configuration_may_execute = True
         if token in {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"}:
             index += 2
             continue
@@ -670,7 +678,7 @@ def _skip_git_global_options(argv: list[str], start: int) -> tuple[int, bool]:
             index += 1
             continue
         index += 1
-    return index, configuration_requires_modify
+    return index, configuration_may_execute
 
 
 def _git_command_is_read_only(argv: list[str], subcommand_index: int) -> bool:
@@ -731,6 +739,11 @@ def _git_invokes_external_process(argv: list[str], subcommand_index: int) -> boo
             return True
         if subcommand == "cat-file" and (
             _is_git_long_option_prefix(token, "--filters")
+            or _is_git_long_option_prefix(token, "--textconv")
+        ):
+            return True
+        if subcommand in {"diff", "log", "show"} and (
+            _is_git_long_option_prefix(token, "--ext-diff")
             or _is_git_long_option_prefix(token, "--textconv")
         ):
             return True
@@ -889,9 +902,10 @@ def _cargo_invokes_test(argv: list[str], start: int) -> bool:
     return index < len(argv) and argv[index].casefold() in {"t", "test"}
 
 
-def _python_module_invocation(argv: list[str]) -> tuple[str, int] | None:
-    """Return a Python ``-m`` module and its argument start before any script operand."""
+def _python_module_invocation(argv: list[str]) -> tuple[str, int, bool] | None:
+    """Return a Python ``-m`` module, argument start, and interactive flag."""
     index = 1
+    interactive = False
     while index < len(argv):
         token = argv[index]
         if token in {"-", "--"}:
@@ -905,12 +919,14 @@ def _python_module_invocation(argv: list[str]) -> tuple[str, int] | None:
                 if option == "m":
                     inline_module = short_options[option_index + 1 :]
                     if inline_module:
-                        return inline_module, index + 1
+                        return inline_module, index + 1, interactive
                     if index + 1 >= len(argv):
                         return None
-                    return argv[index + 1], index + 2
+                    return argv[index + 1], index + 2, interactive
                 if option == "c":
                     return None
+                if option == "i":
+                    interactive = True
                 if option not in _PYTHON_SIMPLE_SHORT_OPTIONS:
                     break
 
@@ -921,14 +937,28 @@ def _python_module_invocation(argv: list[str]) -> tuple[str, int] | None:
     return None
 
 
-def _hive_cli_invokes_lab(argv: list[str], start: int) -> bool:
-    """Recognize the lab subcommand after supported hive CLI global options."""
+def _hive_cli_capabilities(argv: list[str], start: int) -> frozenset[ResearchCapability]:
+    """Classify the lab subcommand after supported hive CLI global options."""
     subcommand_index = _skip_leading_options(
         argv,
         start,
         value_options=_HIVE_GLOBALS_WITH_VALUE,
     )
-    return subcommand_index < len(argv) and argv[subcommand_index].casefold() in {
+    if subcommand_index >= len(argv) or argv[subcommand_index].casefold() not in {
         "lab",
         "lab.exe",
-    }
+    }:
+        return frozenset()
+    return _lab_capabilities(argv, subcommand_index + 1)
+
+
+def _lab_capabilities(argv: list[str], start: int) -> frozenset[ResearchCapability]:
+    """Preserve nested capabilities when ``lab run`` receives a child command."""
+    if start < len(argv) and argv[start].casefold() == "run":
+        for token in argv[start + 1 :]:
+            if token == "--":
+                break
+            option = token.partition("=")[0]
+            if option == "--command":
+                return _SHELL_REQUIRED_CAPABILITIES
+    return frozenset({ResearchCapability.LAUNCH_EXPERIMENTS})

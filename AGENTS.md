@@ -239,7 +239,7 @@ Follow the portable worker contracts. They apply to every agent platform.
 
 ## Review expectations
 
-Use [`REVIEW.md`](REVIEW.md) for the shared checklist. Reviewers should verify behavior at both the soft-policy and hard-enforcement layers, with particular attention to merge prohibition, force-push parsing, expected-branch checks, path traversal, JSON compatibility, cross-platform path handling, arbitrary interpreter routes, and read-oriented commands that can launch nested processes without preserving their capability requirements.
+Use [`REVIEW.md`](REVIEW.md) for the shared checklist. Reviewers should verify behavior at both the soft-policy and hard-enforcement layers, with particular attention to merge prohibition, force-push parsing, expected-branch checks, path traversal, JSON compatibility, cross-platform path handling, arbitrary or interactive interpreter routes, wrapper/runtime configuration, lab child commands, and read-oriented commands that can launch nested processes without preserving their capability requirements.
 
 ## Related planning
 
