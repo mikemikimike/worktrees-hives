@@ -320,6 +320,30 @@ class TestCapabilityEnforcement:
             ["git", "ls-remote", "evil"],
             ["git", "credential", "fill"],
             ["git", "difftool", "HEAD~1", "HEAD"],
+            ["git", "add", "x.txt"],
+            ["git", "-P", "-c", "core.fsmonitor=false", "cat-file", "-p", "deadbeef"],
+            [
+                "env",
+                "GIT_NO_LAZY_FETCH=1",
+                "git",
+                "-P",
+                "-c",
+                "core.fsmonitor=false",
+                "for-each-ref",
+                "--format=%(signature:grade)",
+                "refs/heads/main",
+            ],
+            [
+                "env",
+                "GIT_NO_LAZY_FETCH=1",
+                "git",
+                "-P",
+                "-c",
+                "core.fsmonitor=false",
+                "rev-list",
+                "--alternate-refs",
+                "HEAD",
+            ],
             [
                 "git",
                 "-P",
@@ -465,6 +489,8 @@ class TestCapabilityEnforcement:
         assert (
             classify_command(
                 [
+                    "env",
+                    "GIT_NO_LAZY_FETCH=1",
                     "git",
                     "--no-pager",
                     "-c",
@@ -492,14 +518,15 @@ class TestCapabilityEnforcement:
             "-c",
             "core.fsmonitor=false",
         ]
+        safe_object_git = ["env", "GIT_NO_LAZY_FETCH=1", *safe_git]
         safe_history_git = [
-            *safe_git,
+            *safe_object_git,
             "-c",
             "log.showSignature=false",
         ]
 
-        assert classify_command(["git", "-C", "/tmp/repo", "commit", "-m", "x"]) == modify
-        assert classify_command(["git.exe", "add", "file"]) == modify
+        assert classify_command(["git", "-C", "/tmp/repo", "commit", "-m", "x"]) == shell
+        assert classify_command(["git.exe", "add", "file"]) == shell
         assert classify_command("patch -p1 < x") == modify
         assert classify_command(["patch", "file"]) == modify
         for subcommand in (
@@ -518,9 +545,9 @@ class TestCapabilityEnforcement:
             "mv",
             "rm",
         ):
-            assert classify_command(["git", subcommand]) == modify
+            assert classify_command(["git", subcommand]) == shell
 
-        assert classify_command(["env", "git", "commit", "-m", "x"]) == modify
+        assert classify_command(["env", "git", "commit", "-m", "x"]) == shell
         assert (
             classify_command(
                 [
@@ -540,7 +567,7 @@ class TestCapabilityEnforcement:
                     "x",
                 ]
             )
-            == modify
+            == shell
         )
         assert classify_command(["sh", "-c", "git commit -m x"]) == shell
         assert classify_command(["ash", "-c", "git commit -m x"]) == shell
@@ -551,10 +578,10 @@ class TestCapabilityEnforcement:
         assert classify_command([*safe_git, "branch", "--show-current"]) == frozenset()
         assert classify_command([*safe_git, "remote", "-v"]) == frozenset()
         assert classify_command([*safe_git, "config", "--get", "user.name"]) == frozenset()
-        assert classify_command(["git", "branch", "new-branch"]) == modify
-        assert classify_command(["git", "remote", "add", "origin", "url"]) == modify
-        assert classify_command(["git", "remote", "-v", "add", "origin", "url"]) == modify
-        assert classify_command(["git", "config", "user.name", "value"]) == modify
+        assert classify_command(["git", "branch", "new-branch"]) == shell
+        assert classify_command(["git", "remote", "add", "origin", "url"]) == shell
+        assert classify_command(["git", "remote", "-v", "add", "origin", "url"]) == shell
+        assert classify_command(["git", "config", "user.name", "value"]) == shell
         assert classify_command(["git", "diff", "--output=victim.py"]) == shell
         assert classify_command(["git", "show", "--output", "victim.py"]) == shell
         assert (
@@ -590,6 +617,8 @@ class TestCapabilityEnforcement:
         assert (
             classify_command(
                 [
+                    "env",
+                    "GIT_NO_LAZY_FETCH=1",
                     "git",
                     "--paginate",
                     "--no-pager",
@@ -601,24 +630,14 @@ class TestCapabilityEnforcement:
             == frozenset()
         )
         assert classify_command(["git", "-P", "status"]) == shell
-        assert (
-            classify_command(["git", "-P", "-c", "core.fsmonitor=false", "status"]) == frozenset()
-        )
+        assert classify_command(["git", "-P", "-c", "core.fsmonitor=false", "status"]) == shell
         assert classify_command(["git", "-P", "-c", "log.showSignature=false", "status"]) == shell
-        assert (
-            classify_command(
-                [
-                    "git",
-                    "-P",
-                    "-ccore.fsmonitor=false",
-                    "status",
-                ]
-            )
-            == frozenset()
-        )
+        assert classify_command(["git", "-P", "-ccore.fsmonitor=false", "status"]) == shell
+        assert classify_command([*safe_object_git, "status"]) == frozenset()
         assert classify_command(["git", "-P", "-c", "core.fsmonitor=true", "status"]) == shell
         assert (
-            classify_command([*safe_git, "diff", "--no-ext-diff", "--no-textconv"]) == frozenset()
+            classify_command([*safe_object_git, "diff", "--no-ext-diff", "--no-textconv"])
+            == frozenset()
         )
         assert (
             classify_command(
@@ -632,7 +651,8 @@ class TestCapabilityEnforcement:
             )
             == frozenset()
         )
-        assert classify_command([*safe_git, "cat-file", "-p", "HEAD:victim"]) == frozenset()
+        assert classify_command([*safe_git, "cat-file", "-p", "HEAD:victim"]) == shell
+        assert classify_command([*safe_object_git, "cat-file", "-p", "HEAD:victim"]) == frozenset()
         assert classify_command(["env", "-P", "/tmp/attacker", "git", "status"]) == shell
         assert classify_command(["git", "log", "-up", "-1"]) == shell
         assert classify_command(["git", "whatchanged", "-p", "-1"]) == shell
@@ -686,6 +706,7 @@ class TestCapabilityEnforcement:
         assert classify_command(["git", "difftool", "HEAD~1", "HEAD"]) == shell
         assert classify_command(["git", "archive", "--format=evil", "HEAD"]) == shell
         assert classify_command([*safe_git, "log", "--pretty=medium", "-1"]) == shell
+        assert classify_command([*safe_object_git, "log", "--pretty=medium", "-1"]) == shell
         assert classify_command([*safe_history_git, "log"]) == shell
         assert classify_command([*safe_history_git, "log", "--pretty=verify", "-1"]) == shell
         assert classify_command([*safe_history_git, "log", "--format=verify", "-1"]) == shell
@@ -700,6 +721,16 @@ class TestCapabilityEnforcement:
         )
         assert classify_command([*safe_history_git, "log", "--oneline", "-1"]) == frozenset()
         assert classify_command([*safe_history_git, "log", "--pretty=format:%G?", "-1"]) == shell
+        assert (
+            classify_command([*safe_object_git, "for-each-ref", "--format=%(objectname)"])
+            == frozenset()
+        )
+        assert (
+            classify_command([*safe_object_git, "for-each-ref", "--format=%(signature:grade)"])
+            == shell
+        )
+        assert classify_command([*safe_object_git, "rev-list", "HEAD"]) == frozenset()
+        assert classify_command([*safe_object_git, "rev-list", "--alternate-refs", "HEAD"]) == shell
         assert classify_command(["git", "diff", "--", "--output=victim.py"]) == shell
         assert (
             classify_command(["git", "-c", "diff.external=sh -c 'touch victim'", "diff"]) == shell
@@ -708,6 +739,10 @@ class TestCapabilityEnforcement:
         assert classify_command(["echo", "git", "commit"]) == frozenset()
         assert classify_command(["echo", "worktrees-hives", "lab"]) == frozenset()
         assert classify_command(["node", "-e", "process.exit(0)"]) == frozenset()
+        assert (
+            classify_command(["env", "GIT_NO_LAZY_FETCH=1", "node", "-e", "process.exit(0)"])
+            == shell
+        )
         assert classify_command(["cargo", "run"]) == frozenset()
 
         assert classify_command(["py.test", "-q"]) == tests

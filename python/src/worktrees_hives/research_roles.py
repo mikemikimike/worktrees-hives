@@ -479,6 +479,12 @@ _GIT_BUILTIN_PRETTY_FORMATS: frozenset[str] = frozenset(
 )
 _GIT_SAFE_FALSE_CONFIG_KEYS: frozenset[str] = frozenset({"core.fsmonitor", "log.showsignature"})
 _GIT_FALSE_CONFIG_VALUES: frozenset[str] = frozenset({"0", "false", "no", "off"})
+_GIT_LAZY_FETCH_SUBCOMMANDS: frozenset[str] = _GIT_READ_ONLY_SUBCOMMANDS.difference(
+    {"count-objects", "ls-remote", "version"}
+)
+_GIT_REVISION_WALK_SUBCOMMANDS: frozenset[str] = frozenset(
+    {"log", "rev-list", "rev-parse", "shortlog", "show", "whatchanged"}
+)
 _SHELL_EXECUTORS: frozenset[str] = frozenset(
     {
         "bash",
@@ -573,13 +579,16 @@ def classify_command(command: str | Sequence[str]) -> frozenset[ResearchCapabili
     if not raw_argv:
         return frozenset()
 
-    argv = _unwrap_command(raw_argv)
-    if argv is None:
+    unwrapped = _unwrap_command(raw_argv)
+    if unwrapped is None:
         return _SHELL_REQUIRED_CAPABILITIES
+    argv, lazy_fetch_disabled = unwrapped
     if not argv:
         return frozenset()
 
     executable = _token_basename(argv[0])
+    if lazy_fetch_disabled and executable not in {"git", "git.exe"}:
+        return _SHELL_REQUIRED_CAPABILITIES
 
     if executable in {"git", "git.exe"}:
         sub_i, global_option_may_execute, pager_disabled, disabled_process_configs = (
@@ -591,13 +600,16 @@ def classify_command(command: str | Sequence[str]) -> frozenset[ResearchCapabili
             if _git_invokes_external_process(argv, sub_i):
                 return _SHELL_REQUIRED_CAPABILITIES
             if _git_command_is_read_only(argv, sub_i):
+                subcommand = argv[sub_i].casefold()
+                if subcommand in _GIT_LAZY_FETCH_SUBCOMMANDS and not lazy_fetch_disabled:
+                    return _SHELL_REQUIRED_CAPABILITIES
                 required_disabled_configs = _git_required_disabled_process_configs(argv, sub_i)
                 if not pager_disabled or not required_disabled_configs.issubset(
                     disabled_process_configs
                 ):
                     return _SHELL_REQUIRED_CAPABILITIES
             else:
-                return frozenset({ResearchCapability.MODIFY_CODE})
+                return _SHELL_REQUIRED_CAPABILITIES
         return frozenset()
 
     if executable in _SHELL_EXECUTORS:
@@ -832,6 +844,14 @@ def _git_invokes_external_process(argv: list[str], subcommand_index: int) -> boo
         return True
     if subcommand == "ls-remote" and _git_ls_remote_queries(arguments):
         return True
+    if subcommand in _GIT_REVISION_WALK_SUBCOMMANDS and _git_has_long_option(
+        arguments, "--alternate-refs"
+    ):
+        return True
+    if subcommand == "for-each-ref" and any(
+        "%(signature" in token.casefold() for token in arguments
+    ):
+        return True
     if subcommand == "diff" and not (
         _git_has_long_option(arguments, "--no-ext-diff")
         and _git_has_long_option(arguments, "--no-textconv")
@@ -1024,11 +1044,12 @@ def _env_split_string_payload(argv: list[str], index: int) -> tuple[str, int] | 
     return (argv[index + 1], 2) if index + 1 < len(argv) else None
 
 
-def _unwrap_env(argv: list[str]) -> list[str] | None:
-    """Peel GNU env options while rejecting behavior-changing assignments."""
+def _unwrap_env(argv: list[str]) -> tuple[list[str], bool] | None:
+    """Peel GNU env options, recognizing only the lazy-fetch process neutralizer."""
     current = argv
     index = 1
     split_count = 0
+    lazy_fetch_disabled = False
     while index < len(current):
         token = current[index]
         if token == "--":
@@ -1039,8 +1060,12 @@ def _unwrap_env(argv: list[str]) -> list[str] | None:
             continue
         if not token.startswith("-"):
             if "=" in token:
-                return None
-            return current[index:]
+                if token != "GIT_NO_LAZY_FETCH=1":
+                    return None
+                lazy_fetch_disabled = True
+                index += 1
+                continue
+            return current[index:], lazy_fetch_disabled
 
         split_payload = _env_split_string_payload(current, index)
         if split_payload is not None:
@@ -1068,19 +1093,21 @@ def _unwrap_env(argv: list[str]) -> list[str] | None:
             index += 2
         else:
             index += 1
-    return []
+    return [], lazy_fetch_disabled
 
 
-def _unwrap_command(argv: list[str]) -> list[str] | None:
+def _unwrap_command(argv: list[str]) -> tuple[list[str], bool] | None:
     """Peel supported argv wrappers without inspecting ordinary command arguments."""
     current = argv
+    lazy_fetch_disabled = False
     while current:
         executable = _token_basename(current[0])
         if executable in {"env", "env.exe"}:
             unwrapped = _unwrap_env(current)
             if unwrapped is None:
                 return None
-            current = unwrapped
+            current, env_disables_lazy_fetch = unwrapped
+            lazy_fetch_disabled = lazy_fetch_disabled or env_disables_lazy_fetch
             continue
         elif executable in {"timeout", "timeout.exe"}:
             index = _skip_wrapper_options(current, 1, value_options=_TIMEOUT_OPTIONS_WITH_VALUE)
@@ -1092,9 +1119,9 @@ def _unwrap_command(argv: list[str]) -> list[str] | None:
             if index is None:
                 return None
         else:
-            return current
+            return current, lazy_fetch_disabled
         current = current[index:] if index < len(current) else []
-    return current
+    return current, lazy_fetch_disabled
 
 
 def _cargo_invokes_test(argv: list[str], start: int) -> bool:
