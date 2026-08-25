@@ -3,7 +3,7 @@
 `worktrees-hives` is a multi-platform foundation for turning issues into pull requests and babysitting those pull requests with isolated subagents. It combines an agent skill, a Python policy orchestrator, and a Rust safety core.
 
 > [!IMPORTANT]
-> The project never auto-merges. It prepares pull requests for a human merge decision.
+> The project never auto-merges. Its runtime and workers prepare pull requests for a human merge decision; a primary interactive agent may execute only an explicitly requested one-shot merge under the [`AGENTS.md` protocol](AGENTS.md#human-authorized-one-shot-merge-protocol).
 
 The repository is in its foundation phase. The Rust workspace is available; the Python package and complete agent skill are tracked separately.
 
@@ -30,9 +30,10 @@ git / gh / operating system
 | Agent skill | Prompts and guidance for when and how an agent calls the tooling | Enforceable safety policy |
 | Python `worktrees_hives` | Discovery, partitioning, issue-to-PR and babysit policy, stack ordering, fix budgets, and reports | Direct worktree or unsafe git mutation |
 | Rust `wh-core` + `wh` | Worktrees, durable job state, process supervision, path sandboxing, branch verification, and hard git/GitHub safety stops | High-level agent policy |
+| Interactive host connector | One-shot merge after a current human request and live preflight | Worker, unattended, queued, or inferred merges |
 | `git`, `gh`, OS | Version-control, GitHub, and process primitives invoked through Rust | Hive policy |
 
-**Why a hybrid?** Rust enforces safety-sensitive mutation rules (never-merge, force-with-lease, branch verification, path sandboxing) at the binary boundary where a malformed prompt or Python bug cannot bypass them. Python handles the orchestration logic that benefits from rapid iteration and rich ecosystem tooling. The agent skill layer remains portable across platforms.
+**Why a hybrid?** Rust enforces safety-sensitive runtime mutation rules (no runtime merge path, force-with-lease, branch verification, path sandboxing) at the binary boundary where a malformed prompt or Python bug cannot bypass them. Python handles the orchestration logic that benefits from rapid iteration and rich ecosystem tooling. The agent skill layer remains portable across platforms.
 
 The Python/Rust boundary is CLI-first and uses versioned JSON instead of PyO3. The contract is versioned independently so Python and Rust can evolve without sharing an in-process ABI. The v1 contract is tracked in [GitHub #40](https://github.com/rmems/worktrees-hives/issues/40); its documentation will live at `docs/json-contract.md`.
 
@@ -42,7 +43,9 @@ See [`AGENTS.md`](AGENTS.md) for detailed source ownership, data flow, and per-l
 
 These rules apply to every agent, platform, and command path:
 
-- **Never merge pull requests.** No `gh pr merge`, merge API, or equivalent automated path is allowed.
+- **Never merge autonomously.** The runtime, orchestrators, babysit loops, scheduled jobs, and worker agents expose no merge path.
+- A primary interactive agent may perform one immediate merge only after the human unambiguously identifies and affirmatively requests that exact PR and the agent completes the fresh, SHA-sensitive [authorization and review protocol](AGENTS.md#human-authorized-one-shot-merge-protocol).
+- Auto-merge, merge queues, scheduled merges, and admin bypasses are always forbidden.
 - Force pushes may use only `--force-with-lease`; bare `--force` and `-f` are forbidden.
 - Each job edits only its assigned branch and isolated worktree.
 - Mutating operations must verify the expected job branch and remain inside the configured path sandbox.
@@ -50,7 +53,7 @@ These rules apply to every agent, platform, and command path:
 - Stacked pull requests are handled from the bottom of the stack upward.
 - Review replies are posted only after the fix is pushed and include the pushed SHA plus attribution, for example: `Grok Build agent: fixed in abc1234`.
 
-Soft prompt text is not considered enforcement. Hard stops belong in Rust so a malformed prompt or Python bug cannot bypass them.
+Soft prompt text is not considered runtime enforcement. Runtime hard stops belong in Rust so a malformed prompt or Python bug cannot bypass them; the narrowly authorized interactive merge uses the host's GitHub connector outside the unattended product runtime.
 
 ## Owner allowlist
 
@@ -102,7 +105,7 @@ Python will invoke `wh` from `WH_BIN` or `PATH` and consume the versioned JSON c
 
 - [`AGENTS.md`](AGENTS.md) — agent roles, boundaries, data flow, and worktree rules
 - [`docs/workflows/safe-issue-verified-commit.md`](docs/workflows/safe-issue-verified-commit.md) — issue → verified push
-- [`docs/workflows/safe-verified-commit-to-pr.md`](docs/workflows/safe-verified-commit-to-pr.md) — verified push → PR (never merge)
+- [`docs/workflows/safe-verified-commit-to-pr.md`](docs/workflows/safe-verified-commit-to-pr.md) — verified push → PR handoff (that workflow never merges)
 - [`REVIEW.md`](REVIEW.md) — pull-request lifecycle and review checklist
 - [`docs/aggregate-report.md`](docs/aggregate-report.md) — aggregate discoveries report format (Markdown table + JSON)
 - Hybrid foundation epic: [GitHub #21](https://github.com/rmems/worktrees-hives/issues/21)

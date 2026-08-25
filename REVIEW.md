@@ -7,9 +7,10 @@ This guide defines the review and pull-request lifecycle for `worktrees-hives`. 
 ```text
 issue -> claimed job -> isolated worktree -> focused commits -> pull request
       -> CI/review babysit cycles -> merge-ready report -> human merge decision
+      -> human merge or explicitly authorized one-shot primary-agent merge
 ```
 
-The orchestrator and its agents may prepare a pull request and report that it is merge-ready. They must never merge it or claim that an automated merge will occur.
+The orchestrator, unattended runtime, babysit loops, and worker agents may prepare a pull request and report that it is merge-ready, but they never merge it or claim that an automated merge will occur. A primary interactive agent may execute a human's explicit one-shot merge request only by completing the [protocol in `AGENTS.md`](AGENTS.md#human-authorized-one-shot-merge-protocol). Auto-merge and merge queues remain forbidden.
 
 For stacked pull requests, review and fix the bottom PR before its children. Re-evaluate children after their base changes.
 
@@ -25,7 +26,8 @@ For stacked pull requests, review and fix the bottom PR before its children. Re-
 
 ### Safety
 
-- [ ] No command, API call, prompt, or documentation path can merge a PR automatically.
+- [ ] No command, API call, prompt, or documentation path can merge a PR automatically, enqueue it, or schedule a deferred merge.
+- [ ] Product runtime and worker interfaces expose no merge path; any interactive one-shot merge is outside the unattended runtime and satisfies the complete human-authorization protocol.
 - [ ] Force pushing accepts only `--force-with-lease`; bare `--force` and `-f` are rejected.
 - [ ] Mutating operations verify the expected job branch.
 - [ ] Paths are derived under the configured worktree base and reject traversal or escape.
@@ -54,7 +56,7 @@ Rust owns the hard safety boundary. Reviewers should check:
 
 - Policy is enforced in `wh-core`, not only in `clap` argument definitions or Python.
 - Git and GitHub operations use explicit allowlists and structured argument vectors rather than shell command strings.
-- `gh pr merge` and merge-oriented `gh api` requests are impossible through public interfaces.
+- `gh pr merge` and merge-oriented `gh api` requests are impossible through product runtime public interfaces.
 - Branch verification occurs immediately before mutation to reduce time-of-check/time-of-use risk.
 - Canonicalization and component checks prevent `..`, symlink, or prefix-based path escape.
 - State writes use a temporary file and atomic replacement without leaving partial JSON.
@@ -100,7 +102,7 @@ Skill text is a portable operator interface, not enforcement. Verify that it:
 
 - Calls the Python orchestrator and `wh` instead of bypassing them with direct mutations.
 - Does not promise unsupported host-platform capabilities.
-- Preserves never-merge, worktree isolation, allowlist, stack order, and attribution rules.
+- Preserves deny-by-default merge behavior, the bounded primary-agent authorization protocol, worktree isolation, allowlist, stack order, and attribution rules.
 - Distinguishes implemented commands from planned commands.
 - Uses bounded, concrete worker prompts and reports unresolved work rather than hiding it.
 
@@ -114,6 +116,19 @@ Grok Build agent: fixed the branch check in abc1234 and added the mismatch regre
 
 Replies may explain why no code change is needed and do not count against the code-fix budget. Resolve a thread only when the concern is addressed or the reviewer has accepted the explanation.
 
+## Human-authorized one-shot merge review
+
+Before a primary interactive agent executes a requested merge, verify all of the following:
+
+- [ ] The human's current message unambiguously identifies and affirmatively requests the exact PR, either directly or by reference to the single current PR; no standing permission or inferred intent is being reused.
+- [ ] The expected repository, PR number, base, head SHA, and merge method were stated. The method is the human's choice, or squash when the request omitted a method.
+- [ ] A fresh GitHub MCP preflight confirms the PR is open, non-draft, conflict-free, mergeable, still at that head SHA, and has all required checks terminal and successful without a protection bypass.
+- [ ] The current review decision, every paginated review thread, and trusted-bot comments were inspected.
+- [ ] Any unresolved findings were disclosed before the final human decision. Every explicitly deferred actionable finding has a linked open GitHub issue; duplicate, obsolete, or non-actionable findings have a documented disposition.
+- [ ] No new blocker appeared and authorization did not expire because the target/head changed, the method became ambiguous, or the session ended.
+- [ ] The operation is an immediate one-shot merge through GitHub MCP when available. Auto-merge, merge queues, scheduled merges, and admin bypasses are disabled.
+- [ ] The post-mutation read confirms the merged state and captures the method and resulting merge commit SHA before the agent claims success.
+
 ## Review outcome
 
-A successful automated cycle reports the PR as **merge-ready** when required CI is green, conflicts are absent, change requests are cleared, and review threads are resolved. That status is advisory. A human reviewer decides whether and when to merge.
+A successful automated cycle reports the PR as **merge-ready** when required CI is green, conflicts are absent, change requests are cleared, and review threads are resolved. That status is advisory and does not authorize a merge. A human reviewer decides whether and when to merge, then either merges personally or explicitly requests a one-shot primary-agent merge under the checklist above.
