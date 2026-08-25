@@ -482,8 +482,55 @@ _GIT_FALSE_CONFIG_VALUES: frozenset[str] = frozenset({"0", "false", "no", "off"}
 _GIT_LAZY_FETCH_SUBCOMMANDS: frozenset[str] = _GIT_READ_ONLY_SUBCOMMANDS.difference(
     {"count-objects", "ls-remote", "version"}
 )
-_GIT_REVISION_WALK_SUBCOMMANDS: frozenset[str] = frozenset(
-    {"log", "rev-list", "rev-parse", "shortlog", "show", "whatchanged"}
+_GIT_CONFIG_READ_ACTIONS: frozenset[str] = frozenset(
+    {
+        "--get",
+        "--get-all",
+        "--get-color",
+        "--get-colorbool",
+        "--get-regexp",
+        "--get-urlmatch",
+        "--list",
+        "-l",
+    }
+)
+_GIT_CONFIG_WRITE_ACTIONS: frozenset[str] = frozenset(
+    {
+        "--add",
+        "--edit",
+        "--remove-section",
+        "--rename-section",
+        "--replace-all",
+        "--unset",
+        "--unset-all",
+        "-e",
+    }
+)
+_GIT_CONFIG_SAFE_FLAGS: frozenset[str] = frozenset(
+    {
+        "--all",
+        "--bool",
+        "--bool-or-int",
+        "--expiry-date",
+        "--fixed-value",
+        "--global",
+        "--includes",
+        "--int",
+        "--local",
+        "--name-only",
+        "--no-includes",
+        "--null",
+        "--path",
+        "--show-names",
+        "--show-origin",
+        "--show-scope",
+        "--system",
+        "--worktree",
+        "-z",
+    }
+)
+_GIT_CONFIG_SAFE_VALUE_OPTIONS: frozenset[str] = frozenset(
+    {"--default", "--file", "--type", "--url", "--value", "-f"}
 )
 _SHELL_EXECUTORS: frozenset[str] = frozenset(
     {
@@ -591,17 +638,23 @@ def classify_command(command: str | Sequence[str]) -> frozenset[ResearchCapabili
         return _SHELL_REQUIRED_CAPABILITIES
 
     if executable in {"git", "git.exe"}:
-        sub_i, global_option_may_execute, pager_disabled, disabled_process_configs = (
-            _skip_git_global_options(argv, 1)
-        )
+        (
+            sub_i,
+            global_option_may_execute,
+            pager_disabled,
+            optional_locks_disabled,
+            disabled_process_configs,
+        ) = _skip_git_global_options(argv, 1)
         if global_option_may_execute:
             return _SHELL_REQUIRED_CAPABILITIES
         if sub_i < len(argv):
             if _git_invokes_external_process(argv, sub_i):
                 return _SHELL_REQUIRED_CAPABILITIES
             if _git_command_is_read_only(argv, sub_i):
-                subcommand = argv[sub_i].casefold()
+                subcommand = argv[sub_i]
                 if subcommand in _GIT_LAZY_FETCH_SUBCOMMANDS and not lazy_fetch_disabled:
+                    return _SHELL_REQUIRED_CAPABILITIES
+                if subcommand == "status" and not optional_locks_disabled:
                     return _SHELL_REQUIRED_CAPABILITIES
                 required_disabled_configs = _git_required_disabled_process_configs(argv, sub_i)
                 if not pager_disabled or not required_disabled_configs.issubset(
@@ -696,20 +749,28 @@ def _is_python_interpreter(executable: str) -> bool:
     return False
 
 
-def _skip_git_global_options(argv: list[str], start: int) -> tuple[int, bool, bool, frozenset[str]]:
+def _skip_git_global_options(
+    argv: list[str], start: int
+) -> tuple[int, bool, bool, bool, frozenset[str]]:
     """Advance to the subcommand and report process-neutralizing global state."""
     index = start
     configuration_may_execute = False
     pager_mode: bool | None = None
+    optional_locks_disabled = False
     disabled_process_configs: set[str] = set()
     while index < len(argv):
         token = argv[index]
+        if token == "--":
+            index += 1
+            break
         if not token.startswith("-"):
             break
         if token == "-p" or _is_git_long_option_prefix(token, "--paginate"):
             pager_mode = True
         elif token in {"-P", "--no-pager"}:
             pager_mode = False
+        if token == "--no-optional-locks":
+            optional_locks_disabled = True
         if token == "-c":
             if index + 1 >= len(argv):
                 configuration_may_execute = True
@@ -745,6 +806,7 @@ def _skip_git_global_options(argv: list[str], start: int) -> tuple[int, bool, bo
         index,
         configuration_may_execute or pager_mode is True,
         pager_mode is False,
+        optional_locks_disabled,
         frozenset(disabled_process_configs),
     )
 
@@ -764,7 +826,7 @@ def _git_safe_false_config_key(config: str) -> str | None:
 
 def _git_command_is_read_only(argv: list[str], subcommand_index: int) -> bool:
     """Allow known inspection forms while treating unknown Git forms as mutating."""
-    subcommand = argv[subcommand_index].casefold()
+    subcommand = argv[subcommand_index]
     arguments = argv[subcommand_index + 1 :]
     for token in arguments:
         if token == "--":
@@ -780,39 +842,50 @@ def _git_command_is_read_only(argv: list[str], subcommand_index: int) -> bool:
             arguments = arguments[1:]
         return not arguments or arguments[0] in {"get-url", "show"}
     if subcommand == "config":
-        read_actions = {
-            "--get",
-            "--get-all",
-            "--get-regexp",
-            "--get-urlmatch",
-            "--list",
-            "-l",
-        }
-        write_actions = {
-            "--add",
-            "--edit",
-            "-e",
-            "--remove-section",
-            "--rename-section",
-            "--replace-all",
-            "--unset",
-            "--unset-all",
-            "remove-section",
-            "rename-section",
-            "set",
-            "unset",
-        }
-        return bool(read_actions.intersection(arguments)) and not write_actions.intersection(
-            arguments
-        )
+        return _git_config_is_read_only(arguments)
     return False
+
+
+def _git_config_is_read_only(arguments: list[str]) -> bool:
+    """Recognize only positional Git config actions that cannot mutate configuration."""
+    read_action = False
+    index = 0
+    while index < len(arguments):
+        token = arguments[index]
+        if token == "--":
+            return read_action
+        if not token.startswith("-") or token == "-":
+            if read_action:
+                return True
+            return token in {"get", "list"}
+        if token in _GIT_CONFIG_WRITE_ACTIONS:
+            return False
+        if token in _GIT_CONFIG_READ_ACTIONS:
+            read_action = True
+            index += 1
+            continue
+        option, separator, _value = token.partition("=")
+        if option == "--blob":
+            return False
+        if option in _GIT_CONFIG_SAFE_VALUE_OPTIONS:
+            if not separator:
+                if index + 1 >= len(arguments):
+                    return False
+                index += 2
+            else:
+                index += 1
+            continue
+        if token not in _GIT_CONFIG_SAFE_FLAGS:
+            return False
+        index += 1
+    return read_action
 
 
 def _git_required_disabled_process_configs(
     argv: list[str], subcommand_index: int
 ) -> frozenset[str]:
     """Return ambient process settings a read-only command must explicitly disable."""
-    subcommand = argv[subcommand_index].casefold()
+    subcommand = argv[subcommand_index]
     required = {"core.fsmonitor"}
     arguments = argv[subcommand_index + 1 :]
     if "--" in arguments:
@@ -827,7 +900,7 @@ def _git_required_disabled_process_configs(
 
 def _git_invokes_external_process(argv: list[str], subcommand_index: int) -> bool:
     """Detect read-oriented Git options that can launch configured commands."""
-    subcommand = argv[subcommand_index].casefold()
+    subcommand = argv[subcommand_index]
     arguments: list[str] = []
     for token in argv[subcommand_index + 1 :]:
         if token == "--":
@@ -844,13 +917,9 @@ def _git_invokes_external_process(argv: list[str], subcommand_index: int) -> boo
         return True
     if subcommand == "ls-remote" and _git_ls_remote_queries(arguments):
         return True
-    if subcommand in _GIT_REVISION_WALK_SUBCOMMANDS and _git_has_long_option(
-        arguments, "--alternate-refs"
-    ):
+    if _git_has_long_option(arguments, "--alternate-refs"):
         return True
-    if subcommand == "for-each-ref" and any(
-        "%(signature" in token.casefold() for token in arguments
-    ):
+    if subcommand == "for-each-ref" and _git_ref_filter_invokes_signature(arguments):
         return True
     if subcommand == "diff" and not (
         _git_has_long_option(arguments, "--no-ext-diff")
@@ -895,6 +964,33 @@ def _git_invokes_external_process(argv: list[str], subcommand_index: int) -> boo
             _is_git_long_option_prefix(token, "--show-signature") or "%G" in token
         ):
             return True
+    return False
+
+
+def _git_ref_filter_invokes_signature(arguments: list[str]) -> bool:
+    """Inspect format and sort atom sources that may invoke signature verification."""
+    index = 0
+    while index < len(arguments):
+        token = arguments[index]
+        option, separator, value = token.partition("=")
+        is_format = _is_git_long_option_prefix(option, "--format")
+        is_sort = _is_git_long_option_prefix(option, "--sort")
+        if not is_format and not is_sort:
+            index += 1
+            continue
+        if not separator:
+            if index + 1 >= len(arguments):
+                return True
+            index += 1
+            value = arguments[index]
+        normalized = value.casefold()
+        if is_format and ("%(signature" in normalized or "%(*signature" in normalized):
+            return True
+        if is_sort:
+            sort_atom = normalized.lstrip("-").removeprefix("*")
+            if sort_atom == "signature" or sort_atom.startswith("signature:"):
+                return True
+        index += 1
     return False
 
 
@@ -1044,18 +1140,18 @@ def _env_split_string_payload(argv: list[str], index: int) -> tuple[str, int] | 
     return (argv[index + 1], 2) if index + 1 < len(argv) else None
 
 
-def _unwrap_env(argv: list[str]) -> tuple[list[str], bool] | None:
+def _unwrap_env(argv: list[str], lazy_fetch_disabled: bool) -> tuple[list[str], bool] | None:
     """Peel GNU env options, recognizing only the lazy-fetch process neutralizer."""
     current = argv
     index = 1
     split_count = 0
-    lazy_fetch_disabled = False
     while index < len(current):
         token = current[index]
         if token == "--":
             index += 1
             continue
         if token == "-":
+            lazy_fetch_disabled = False
             index += 1
             continue
         if not token.startswith("-"):
@@ -1085,6 +1181,28 @@ def _unwrap_env(argv: list[str]) -> tuple[list[str], bool] | None:
         if token == "-P":
             return None
 
+        if token == "-i" or (
+            token.startswith("--")
+            and "=" not in token
+            and _is_git_long_option_prefix(token, "--ignore-environment")
+        ):
+            lazy_fetch_disabled = False
+            index += 1
+            continue
+
+        option, separator, value = token.partition("=")
+        if token == "-u" or _is_git_long_option_prefix(option, "--unset"):
+            if token == "-u" or not separator:
+                if index + 1 >= len(current):
+                    return None
+                value = current[index + 1]
+                index += 2
+            else:
+                index += 1
+            if value == "GIT_NO_LAZY_FETCH":
+                lazy_fetch_disabled = False
+            continue
+
         if not token.startswith("--") and len(token) > 2:
             return None
         if _option_takes_value(token, _ENV_OPTIONS_WITH_VALUE):
@@ -1103,11 +1221,10 @@ def _unwrap_command(argv: list[str]) -> tuple[list[str], bool] | None:
     while current:
         executable = _token_basename(current[0])
         if executable in {"env", "env.exe"}:
-            unwrapped = _unwrap_env(current)
+            unwrapped = _unwrap_env(current, lazy_fetch_disabled)
             if unwrapped is None:
                 return None
-            current, env_disables_lazy_fetch = unwrapped
-            lazy_fetch_disabled = lazy_fetch_disabled or env_disables_lazy_fetch
+            current, lazy_fetch_disabled = unwrapped
             continue
         elif executable in {"timeout", "timeout.exe"}:
             index = _skip_wrapper_options(current, 1, value_options=_TIMEOUT_OPTIONS_WITH_VALUE)

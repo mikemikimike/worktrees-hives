@@ -493,6 +493,7 @@ class TestCapabilityEnforcement:
                     "GIT_NO_LAZY_FETCH=1",
                     "git",
                     "--no-pager",
+                    "--no-optional-locks",
                     "-c",
                     "core.fsmonitor=false",
                     "status",
@@ -519,6 +520,15 @@ class TestCapabilityEnforcement:
             "core.fsmonitor=false",
         ]
         safe_object_git = ["env", "GIT_NO_LAZY_FETCH=1", *safe_git]
+        safe_status_git = [
+            "env",
+            "GIT_NO_LAZY_FETCH=1",
+            "git",
+            "-P",
+            "--no-optional-locks",
+            "-c",
+            "core.fsmonitor=false",
+        ]
         safe_history_git = [
             *safe_object_git,
             "-c",
@@ -622,6 +632,7 @@ class TestCapabilityEnforcement:
                     "git",
                     "--paginate",
                     "--no-pager",
+                    "--no-optional-locks",
                     "-c",
                     "core.fsmonitor=false",
                     "status",
@@ -633,7 +644,8 @@ class TestCapabilityEnforcement:
         assert classify_command(["git", "-P", "-c", "core.fsmonitor=false", "status"]) == shell
         assert classify_command(["git", "-P", "-c", "log.showSignature=false", "status"]) == shell
         assert classify_command(["git", "-P", "-ccore.fsmonitor=false", "status"]) == shell
-        assert classify_command([*safe_object_git, "status"]) == frozenset()
+        assert classify_command([*safe_object_git, "status"]) == shell
+        assert classify_command([*safe_status_git, "status"]) == frozenset()
         assert classify_command(["git", "-P", "-c", "core.fsmonitor=true", "status"]) == shell
         assert (
             classify_command([*safe_object_git, "diff", "--no-ext-diff", "--no-textconv"])
@@ -808,6 +820,113 @@ class TestCapabilityEnforcement:
             == frozenset()
         )
         assert classify_command([*safe_history_git, "log", "--pretty=format:%H"]) == frozenset()
+
+    def test_git_safe_reads_resist_remaining_configured_process_routes(self) -> None:
+        shell = frozenset(
+            {
+                ResearchCapability.EXECUTE_TESTS,
+                ResearchCapability.MODIFY_CODE,
+                ResearchCapability.LAUNCH_EXPERIMENTS,
+            }
+        )
+        safe_git = ["git", "-P", "-c", "core.fsmonitor=false"]
+        safe_object_git = ["env", "GIT_NO_LAZY_FETCH=1", *safe_git]
+        safe_status_git = [
+            "env",
+            "GIT_NO_LAZY_FETCH=1",
+            "git",
+            "-P",
+            "--no-optional-locks",
+            "-c",
+            "core.fsmonitor=false",
+        ]
+
+        for reset in (
+            ["env", "-u", "GIT_NO_LAZY_FETCH"],
+            ["env", "--unset=GIT_NO_LAZY_FETCH"],
+            ["env", "-i"],
+            ["env", "--ignore-environment"],
+        ):
+            command = [
+                "env",
+                "GIT_NO_LAZY_FETCH=1",
+                *reset,
+                *safe_git,
+                "cat-file",
+                "-p",
+                "missing-object",
+            ]
+            assert classify_command(command) == shell
+
+        assert (
+            classify_command(
+                [
+                    "env",
+                    "GIT_NO_LAZY_FETCH=1",
+                    "env",
+                    "-u",
+                    "CI",
+                    *safe_git,
+                    "cat-file",
+                    "-p",
+                    "HEAD",
+                ]
+            )
+            == frozenset()
+        )
+        assert (
+            classify_command(
+                [
+                    "env",
+                    "GIT_NO_LAZY_FETCH=1",
+                    "env",
+                    "-i",
+                    "GIT_NO_LAZY_FETCH=1",
+                    *safe_git,
+                    "cat-file",
+                    "-p",
+                    "HEAD",
+                ]
+            )
+            == frozenset()
+        )
+
+        for arguments in (
+            ["--format=%(*signature:grade)"],
+            ["--format", "%(*signature:grade)"],
+            ["--sort=signature:grade", "--format=%(objectname)"],
+            ["--sort", "-*signature:grade", "--format=%(objectname)"],
+        ):
+            assert classify_command([*safe_object_git, "for-each-ref", *arguments]) == shell
+
+        assert (
+            classify_command(
+                [
+                    *safe_object_git,
+                    "diff",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--alternate-refs",
+                ]
+            )
+            == shell
+        )
+        assert (
+            classify_command([*safe_object_git, "blame", "--alternate-refs", "HEAD", "--", "file"])
+            == shell
+        )
+
+        assert classify_command([*safe_status_git, "STATUS"]) == shell
+
+        assert classify_command([*safe_git, "config", "foo.bar", "--get"]) == shell
+        assert classify_command([*safe_git, "config", "foo.bar", "--list"]) == shell
+        assert classify_command([*safe_git, "config", "--get", "foo.bar"]) == frozenset()
+        assert (
+            classify_command([*safe_git, "config", "--file", "config", "--get", "foo.bar"])
+            == frozenset()
+        )
+        assert classify_command([*safe_git, "config", "--get", "--unset", "foo.bar"]) == shell
+        assert classify_command([*safe_git, "config", "--get", "foo.bar", "--unset"]) == frozenset()
 
     def test_env_assignments_require_full_capabilities(self) -> None:
         shell = frozenset(
