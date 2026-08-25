@@ -484,7 +484,15 @@ class TestCapabilityEnforcement:
         assert ResearchCapability.LAUNCH_EXPERIMENTS in classify_command(
             ["wh-orch", "lab", "run"]
         )
-        assert classify_command(["git", "--no-pager", "status"]) == frozenset()
+        assert classify_command(
+            [
+                "git",
+                "--no-pager",
+                "-c",
+                "core.fsmonitor=false",
+                "status",
+            ]
+        ) == frozenset()
 ```
 
 - **Step 2: Run to verify fail**
@@ -519,14 +527,14 @@ def assert_role_command_allowed(role: ResearchRole, command: str | Sequence[str]
 Classification rules (must match tests):
 
 - Normalize via the same argv split idea as `lab_run._command_to_argv` (you may duplicate a tiny helper; do not export lab_run privates).
-- Detect `git` / `git.exe`, parse supported global options, and inspect the subcommand. Unchecked runtime configuration (`-c` / `--config-env`) and a final forced-pagination setting (`-p` / `--paginate`) require the full conservative shell capability set because they may select an external process. Read-only Git forms also require that set unless the global options end with explicit pager suppression (`-P` / `--no-pager`), because ambient `core.pager` / `pager.<cmd>` configuration can otherwise launch a command.
-- Git classification is deny-by-default: only `_GIT_READ_ONLY_SUBCOMMANDS` and the explicitly inspected read-only forms with pager suppression require no capability. Options that write output map to `modify_code`. Read-oriented forms that can launch configured processes require the full conservative shell capability set: implicit textconv for `diff`, `show`, and patch-rendering `log` / `whatchanged` (including clustered `-p` / `-u` flags); explicit pager/filter/textconv/ext-diff options; `help` viewers; querying `remote show` or `ls-remote`; direct or rendering signature verification; credential helpers; and difftool commands. Safe callers can explicitly disable implicit diff helpers with `--no-ext-diff` / `--no-textconv`, use the non-querying `remote show -n` / `ls-remote --get-url` forms, and disable ambient pagination. Every other Git subcommand maps to `modify_code`, including `add`, `am`, `apply`, `checkout`, `cherry-pick`, `clean`, `commit`, `merge`, `mv`, `pull`, `rebase`, `reset`, `restore`, `revert`, `rm`, `stash`, and `switch`. Basename `patch` also maps to `modify_code`.
+- Detect `git` / `git.exe`, parse supported global options, and inspect the subcommand. Unchecked runtime configuration (`-c` / `--config-env`) and a final forced-pagination setting (`-p` / `--paginate`) require the full conservative shell capability set because they may select an external process. The only no-capability runtime overrides are explicit false values for `core.fsmonitor` and `log.showSignature`. Read-only Git forms require `core.fsmonitor=false` and final pager suppression (`-P` / `--no-pager`) so ambient pagers and fsmonitor hooks cannot launch configured commands. Pretty-rendering history forms also require `log.showSignature=false`.
+- Git classification is deny-by-default: only `_GIT_READ_ONLY_SUBCOMMANDS` and the explicitly inspected read-only forms under the neutralized global configuration require no capability. Options that write output map to `modify_code`. Read-oriented forms that can launch configured processes require the full conservative shell capability set: implicit textconv for `diff`, `show`, and patch-rendering `log` / `whatchanged` (including clustered `-p` / `-u` flags); explicit pager/filter/textconv/ext-diff options (including `whatchanged --ext-diff`); `help` viewers; querying `remote show` or `ls-remote`; direct, configured-pretty, or rendering signature verification; credential helpers; difftool commands; and archive formatters. Safe callers can explicitly disable implicit diff helpers with `--no-ext-diff` / `--no-textconv`, use the non-querying `remote show -n` / `ls-remote --get-url` forms, and select a built-in or inline `format:` / `tformat:` pretty format for default-pretty history commands. Every other Git subcommand maps to `modify_code`, including `add`, `am`, `apply`, `checkout`, `cherry-pick`, `clean`, `commit`, `merge`, `mv`, `pull`, `rebase`, `reset`, `restore`, `revert`, `rm`, `stash`, and `switch`. Basename `patch` also maps to `modify_code`.
 - Supported command wrappers are parsed conservatively; environment assignments, ambiguous short-option clusters, unsupported GNU `env -S` escapes, and BSD/macOS `env -P` command-lookup overrides fail to the full conservative capability set rather than hiding or weakening the nested command's requirements.
 - `execute_tests`: basename `pytest`; or a recognized CPython/PyPy console, windowed, versioned, or free-threaded interpreter with `-m pytest`, `-m pytest.__main__`, `-m unittest`, or `-m unittest.__main__`; or `cargo test` (after cargo global options, treat `test` as the cargo subcommand).
 - `launch_experiments`: argv `worktrees-hives lab …`, `wh-orch lab …`, an unversioned/versioned console or windowed Python interpreter running `-m worktrees_hives.cli lab …`, or first token `lab`. A `lab run --command` route requires the full conservative shell capability set because it executes a nested argv.
 - Any other recognized Python interpreter route, including `-c`, stdin, scripts, unrelated `-m` modules, and interactive `-i` module launches, requires the full conservative shell capability set. Recognized shell entry points include common POSIX, BusyBox/Alpine, C-shell, PowerShell, and Windows command executables.
 - The #93 classifier accepts argv only. Future #94/#95 execution wiring must sanitize inherited interpreter controls such as `PYTHONINSPECT`; caller-supplied environment overrides that are absent from argv are outside this document's command-classification boundary.
-- `git --no-pager status` and `git --no-pager log` require no extra capability; without pager suppression, even these read forms conservatively account for ambient configured pagers. Unclassified executables impose no extra role capability: this mapping is deliberately not a universal command allowlist, as specified by the design.
+- `git -P -c core.fsmonitor=false status` requires no extra capability. The equivalent safe `log` form also disables ambient signature verification and selects an explicit built-in or inline pretty format, for example `git -P -c core.fsmonitor=false -c log.showSignature=false log --pretty=format:%H`. Without those neutralizers, even read forms conservatively account for configured process launchers. Unclassified executables impose no extra role capability: this mapping is deliberately not a universal command allowlist, as specified by the design.
 
 Import `RoleCapabilityError` from `worktrees_hives.errors`.
 

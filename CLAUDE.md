@@ -65,6 +65,10 @@ _Add your build and test commands here_
 
 _Add a brief overview of your project architecture_
 
+## Review expectations
+
+Use [`REVIEW.md`](REVIEW.md) for the shared checklist. Reviewers should verify behavior at both the soft-policy and hard-enforcement layers, with particular attention to merge prohibition, force-push parsing, expected-branch checks, path traversal, JSON compatibility, cross-platform path handling, alternate or interactive interpreter routes, platform-specific wrapper operands and command-lookup overrides, runtime configuration, lab child commands, ambient Git pagers and fsmonitor hooks, named pretty-format aliases and signature settings, clustered patch flags, and read-oriented commands that can launch nested helpers, viewers, transports, signature tools, credential helpers, diff tools, or archive formatters without preserving their capability requirements.
+
 ## Conventions & Patterns
 
 _Add your project-specific conventions here_

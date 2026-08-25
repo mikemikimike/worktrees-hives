@@ -470,6 +470,15 @@ _GIT_READ_ONLY_SUBCOMMANDS: frozenset[str] = frozenset(
         "whatchanged",
     }
 )
+_GIT_DEFAULT_PRETTY_SUBCOMMANDS: frozenset[str] = frozenset({"log", "show", "whatchanged"})
+_GIT_PRETTY_SUBCOMMANDS: frozenset[str] = frozenset(
+    {*_GIT_DEFAULT_PRETTY_SUBCOMMANDS, "rev-list", "shortlog"}
+)
+_GIT_BUILTIN_PRETTY_FORMATS: frozenset[str] = frozenset(
+    {"email", "full", "fuller", "mboxrd", "medium", "oneline", "raw", "reference", "short"}
+)
+_GIT_SAFE_FALSE_CONFIG_KEYS: frozenset[str] = frozenset({"core.fsmonitor", "log.showsignature"})
+_GIT_FALSE_CONFIG_VALUES: frozenset[str] = frozenset({"0", "false", "no", "off"})
 _SHELL_EXECUTORS: frozenset[str] = frozenset(
     {
         "bash",
@@ -573,14 +582,19 @@ def classify_command(command: str | Sequence[str]) -> frozenset[ResearchCapabili
     executable = _token_basename(argv[0])
 
     if executable in {"git", "git.exe"}:
-        sub_i, global_option_may_execute, pager_disabled = _skip_git_global_options(argv, 1)
+        sub_i, global_option_may_execute, pager_disabled, disabled_process_configs = (
+            _skip_git_global_options(argv, 1)
+        )
         if global_option_may_execute:
             return _SHELL_REQUIRED_CAPABILITIES
         if sub_i < len(argv):
             if _git_invokes_external_process(argv, sub_i):
                 return _SHELL_REQUIRED_CAPABILITIES
             if _git_command_is_read_only(argv, sub_i):
-                if not pager_disabled:
+                required_disabled_configs = _git_required_disabled_process_configs(argv, sub_i)
+                if not pager_disabled or not required_disabled_configs.issubset(
+                    disabled_process_configs
+                ):
                     return _SHELL_REQUIRED_CAPABILITIES
             else:
                 return frozenset({ResearchCapability.MODIFY_CODE})
@@ -670,24 +684,42 @@ def _is_python_interpreter(executable: str) -> bool:
     return False
 
 
-def _skip_git_global_options(argv: list[str], start: int) -> tuple[int, bool, bool]:
-    """Advance to the subcommand and report process and pager option state."""
+def _skip_git_global_options(argv: list[str], start: int) -> tuple[int, bool, bool, frozenset[str]]:
+    """Advance to the subcommand and report process-neutralizing global state."""
     index = start
     configuration_may_execute = False
     pager_mode: bool | None = None
+    disabled_process_configs: set[str] = set()
     while index < len(argv):
         token = argv[index]
         if not token.startswith("-"):
             break
-        if token == "-c" or (token.startswith("-c") and token != "-C"):
-            configuration_may_execute = True
-        if token == "--config-env" or token.startswith("--config-env="):
-            configuration_may_execute = True
         if token == "-p" or _is_git_long_option_prefix(token, "--paginate"):
             pager_mode = True
         elif token in {"-P", "--no-pager"}:
             pager_mode = False
-        if token in {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"}:
+        if token == "-c":
+            if index + 1 >= len(argv):
+                configuration_may_execute = True
+            else:
+                disabled_key = _git_safe_false_config_key(argv[index + 1])
+                if disabled_key is None:
+                    configuration_may_execute = True
+                else:
+                    disabled_process_configs.add(disabled_key)
+            index += 2
+            continue
+        if token.startswith("-c") and token != "-C":
+            disabled_key = _git_safe_false_config_key(token[2:])
+            if disabled_key is None:
+                configuration_may_execute = True
+            else:
+                disabled_process_configs.add(disabled_key)
+            index += 1
+            continue
+        if token == "--config-env" or token.startswith("--config-env="):
+            configuration_may_execute = True
+        if token in {"-C", "--git-dir", "--work-tree", "--namespace", "--config-env"}:
             index += 2
             continue
         if token.startswith(("--git-dir=", "--work-tree=", "--namespace=", "--config-env=")):
@@ -697,7 +729,25 @@ def _skip_git_global_options(argv: list[str], start: int) -> tuple[int, bool, bo
             index += 1
             continue
         index += 1
-    return index, configuration_may_execute or pager_mode is True, pager_mode is False
+    return (
+        index,
+        configuration_may_execute or pager_mode is True,
+        pager_mode is False,
+        frozenset(disabled_process_configs),
+    )
+
+
+def _git_safe_false_config_key(config: str) -> str | None:
+    """Recognize the exact command-line overrides that disable configured processes."""
+    key, separator, value = config.partition("=")
+    normalized_key = key.casefold()
+    if (
+        separator
+        and normalized_key in _GIT_SAFE_FALSE_CONFIG_KEYS
+        and value.casefold() in _GIT_FALSE_CONFIG_VALUES
+    ):
+        return normalized_key
+    return None
 
 
 def _git_command_is_read_only(argv: list[str], subcommand_index: int) -> bool:
@@ -746,6 +796,23 @@ def _git_command_is_read_only(argv: list[str], subcommand_index: int) -> bool:
     return False
 
 
+def _git_required_disabled_process_configs(
+    argv: list[str], subcommand_index: int
+) -> frozenset[str]:
+    """Return ambient process settings a read-only command must explicitly disable."""
+    subcommand = argv[subcommand_index].casefold()
+    required = {"core.fsmonitor"}
+    arguments = argv[subcommand_index + 1 :]
+    if "--" in arguments:
+        arguments = arguments[: arguments.index("--")]
+    if subcommand in _GIT_DEFAULT_PRETTY_SUBCOMMANDS or (
+        subcommand in _GIT_PRETTY_SUBCOMMANDS
+        and _git_explicit_pretty_format_is_safe(arguments) is not None
+    ):
+        required.add("log.showsignature")
+    return frozenset(required)
+
+
 def _git_invokes_external_process(argv: list[str], subcommand_index: int) -> bool:
     """Detect read-oriented Git options that can launch configured commands."""
     subcommand = argv[subcommand_index].casefold()
@@ -757,7 +824,7 @@ def _git_invokes_external_process(argv: list[str], subcommand_index: int) -> boo
 
     if subcommand == "help":
         return True
-    if subcommand in {"credential", "difftool", "verify-commit", "verify-tag"}:
+    if subcommand in {"archive", "credential", "difftool", "verify-commit", "verify-tag"}:
         return True
     if subcommand == "tag" and _git_tag_verifies_signature(arguments):
         return True
@@ -779,6 +846,12 @@ def _git_invokes_external_process(argv: list[str], subcommand_index: int) -> boo
     ):
         return True
 
+    pretty_format_is_safe = _git_explicit_pretty_format_is_safe(arguments)
+    if subcommand in _GIT_DEFAULT_PRETTY_SUBCOMMANDS and pretty_format_is_safe is not True:
+        return True
+    if subcommand in _GIT_PRETTY_SUBCOMMANDS and pretty_format_is_safe is False:
+        return True
+
     for token in arguments:
         if subcommand == "grep" and (
             token.startswith("-O")
@@ -791,18 +864,40 @@ def _git_invokes_external_process(argv: list[str], subcommand_index: int) -> boo
             or _is_git_long_option_prefix(token, "--textconv")
         ):
             return True
-        if subcommand in {"diff", "log", "show"} and (
+        if subcommand in {"diff", "log", "show", "whatchanged"} and (
             _is_git_long_option_prefix(token, "--ext-diff")
             or _is_git_long_option_prefix(token, "--textconv")
         ):
             return True
         if subcommand == "blame" and _is_git_long_option_prefix(token, "--textconv"):
             return True
-        if subcommand in {"log", "show"} and (
+        if subcommand in _GIT_PRETTY_SUBCOMMANDS and (
             _is_git_long_option_prefix(token, "--show-signature") or "%G" in token
         ):
             return True
     return False
+
+
+def _git_explicit_pretty_format_is_safe(arguments: list[str]) -> bool | None:
+    """Classify the final explicit pretty format without resolving repository aliases."""
+    format_is_safe: bool | None = None
+    for token in arguments:
+        if token == "--oneline" or token == "--pretty":
+            format_is_safe = True
+            continue
+        option, separator, value = token.partition("=")
+        if not separator or not (
+            _is_git_long_option_prefix(option, "--pretty")
+            or _is_git_long_option_prefix(option, "--format")
+        ):
+            continue
+        normalized_value = value.casefold()
+        format_is_safe = "%G" not in value and (
+            normalized_value in _GIT_BUILTIN_PRETTY_FORMATS
+            or normalized_value.startswith("format:")
+            or normalized_value.startswith("tformat:")
+        )
+    return format_is_safe
 
 
 def _git_has_long_option(arguments: list[str], option: str) -> bool:
