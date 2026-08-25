@@ -458,6 +458,7 @@ _GIT_READ_ONLY_SUBCOMMANDS: frozenset[str] = frozenset(
         "help",
         "log",
         "ls-files",
+        "ls-remote",
         "ls-tree",
         "name-rev",
         "rev-list",
@@ -572,13 +573,16 @@ def classify_command(command: str | Sequence[str]) -> frozenset[ResearchCapabili
     executable = _token_basename(argv[0])
 
     if executable in {"git", "git.exe"}:
-        sub_i, configuration_may_execute = _skip_git_global_options(argv, 1)
-        if configuration_may_execute:
+        sub_i, global_option_may_execute, pager_disabled = _skip_git_global_options(argv, 1)
+        if global_option_may_execute:
             return _SHELL_REQUIRED_CAPABILITIES
         if sub_i < len(argv):
             if _git_invokes_external_process(argv, sub_i):
                 return _SHELL_REQUIRED_CAPABILITIES
-            if not _git_command_is_read_only(argv, sub_i):
+            if _git_command_is_read_only(argv, sub_i):
+                if not pager_disabled:
+                    return _SHELL_REQUIRED_CAPABILITIES
+            else:
                 return frozenset({ResearchCapability.MODIFY_CODE})
         return frozenset()
 
@@ -666,10 +670,11 @@ def _is_python_interpreter(executable: str) -> bool:
     return False
 
 
-def _skip_git_global_options(argv: list[str], start: int) -> tuple[int, bool]:
-    """Advance to the subcommand and flag config that may launch a process."""
+def _skip_git_global_options(argv: list[str], start: int) -> tuple[int, bool, bool]:
+    """Advance to the subcommand and report process and pager option state."""
     index = start
     configuration_may_execute = False
+    pager_mode: bool | None = None
     while index < len(argv):
         token = argv[index]
         if not token.startswith("-"):
@@ -679,7 +684,9 @@ def _skip_git_global_options(argv: list[str], start: int) -> tuple[int, bool]:
         if token == "--config-env" or token.startswith("--config-env="):
             configuration_may_execute = True
         if token == "-p" or _is_git_long_option_prefix(token, "--paginate"):
-            configuration_may_execute = True
+            pager_mode = True
+        elif token in {"-P", "--no-pager"}:
+            pager_mode = False
         if token in {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"}:
             index += 2
             continue
@@ -690,7 +697,7 @@ def _skip_git_global_options(argv: list[str], start: int) -> tuple[int, bool]:
             index += 1
             continue
         index += 1
-    return index, configuration_may_execute
+    return index, configuration_may_execute or pager_mode is True, pager_mode is False
 
 
 def _git_command_is_read_only(argv: list[str], subcommand_index: int) -> bool:
@@ -750,7 +757,13 @@ def _git_invokes_external_process(argv: list[str], subcommand_index: int) -> boo
 
     if subcommand == "help":
         return True
+    if subcommand in {"credential", "difftool", "verify-commit", "verify-tag"}:
+        return True
+    if subcommand == "tag" and _git_tag_verifies_signature(arguments):
+        return True
     if subcommand == "remote" and _git_remote_show_queries(arguments):
+        return True
+    if subcommand == "ls-remote" and _git_ls_remote_queries(arguments):
         return True
     if subcommand == "diff" and not (
         _git_has_long_option(arguments, "--no-ext-diff")
@@ -760,7 +773,7 @@ def _git_invokes_external_process(argv: list[str], subcommand_index: int) -> boo
     if subcommand == "show" and not _git_has_long_option(arguments, "--no-textconv"):
         return True
     if (
-        subcommand == "log"
+        subcommand in {"log", "whatchanged"}
         and _git_log_requests_patch(arguments)
         and not _git_has_long_option(arguments, "--no-textconv")
     ):
@@ -798,14 +811,37 @@ def _git_has_long_option(arguments: list[str], option: str) -> bool:
 
 
 def _git_log_requests_patch(arguments: list[str]) -> bool:
-    """Detect log modes that render a patch and may run textconv filters."""
+    """Detect history modes that render a patch and may run textconv filters."""
     enabled = False
     for token in arguments:
-        if token in {"-s", "--no-patch"}:
+        if token == "--no-patch":
             enabled = False
-        elif token in {"-p", "-u"} or token.startswith("--patch"):
+        elif token.startswith("--patch"):
             enabled = True
+        elif token.startswith("-") and not token.startswith("--"):
+            for option in token[1:]:
+                if option == "s":
+                    enabled = False
+                elif option in {"p", "u"}:
+                    enabled = True
     return enabled
+
+
+def _git_tag_verifies_signature(arguments: list[str]) -> bool:
+    """Detect tag verification forms that invoke a configured signature program."""
+    for token in arguments:
+        if token == "--":
+            break
+        if _is_git_long_option_prefix(token, "--verify"):
+            return True
+        if token.startswith("-") and not token.startswith("--") and "v" in token[1:]:
+            return True
+    return False
+
+
+def _git_ls_remote_queries(arguments: list[str]) -> bool:
+    """Return whether ls-remote contacts a transport instead of only expanding its URL."""
+    return not _git_has_long_option(arguments, "--get-url")
 
 
 def _git_remote_show_queries(arguments: list[str]) -> bool:
@@ -925,6 +961,9 @@ def _unwrap_env(argv: list[str]) -> list[str] | None:
                 return None
             current = current[:index] + expanded + current[index + consumed :]
             continue
+
+        if token == "-P":
+            return None
 
         if not token.startswith("--") and len(token) > 2:
             return None
