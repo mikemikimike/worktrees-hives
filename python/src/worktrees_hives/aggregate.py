@@ -427,8 +427,8 @@ def _require_nonempty_str(raw: dict[str, Any], key: str) -> str:
 
 def _cell_inline(text: str) -> str:
     """Escape free text for a Markdown table cell / list item (incl. pipes)."""
-    escaped = _findings._escape_md_inline(text).replace("|", "\\|")
-    return escaped.replace("\n", " ").replace("\r", " ")
+    normalized = text.replace("\n", " ").replace("\r", " ")
+    return _findings._escape_md_inline(normalized).replace("|", "\\|")
 
 
 def _cell_code(text: str) -> str:
