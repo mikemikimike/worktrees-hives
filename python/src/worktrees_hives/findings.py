@@ -422,6 +422,8 @@ def _escape_md_inline(text: str) -> str:
         .replace("`", "\\`")
         .replace("[", "\\[")
         .replace("]", "\\]")
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
     )
 
 
