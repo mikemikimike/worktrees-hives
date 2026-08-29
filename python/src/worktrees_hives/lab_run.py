@@ -53,7 +53,11 @@ _SHELL_SEPARATORS = frozenset({"&&", "||", ";", "|", "&"})
 
 # Shell -c payload: git … push … with any force form (free-form command path).
 _SHELL_C_RE = re.compile(
-    r"(?ix)\b(?:sh|bash|zsh|dash|ksh|fish)\b(?:\s+-[^\s]+)*\s+-c\s+(['\"])(.*?)\1"
+    # Keep scanning shell argv tokens until the command option.  Some shells
+    # accept options with a separate value (for example ``bash -o posix``),
+    # so restricting this to dash-prefixed tokens misses the payload entirely.
+    r"(?ix)\b(?:sh|bash|zsh|dash|ksh|fish)\b"
+    r"(?:\s+(?!-c(?:\s|$))\S+)*\s+-c\s+(['\"])(.*?)\1"
 )
 _GIT_PUSH_FORCE_IN_PAYLOAD = re.compile(
     r"(?ix)\bgit(?:\.exe)?\b(?:\s+\S+)*\s+push\b.*?"
