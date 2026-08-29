@@ -161,29 +161,29 @@ class FindingsReport:
             if not items:
                 return "_None._\n"
             lines: list[str] = []
-            for item in items:
-                line = f"- **{_escape_md_inline(item.summary)}**"
-                if item.detail:
-                    line += f" — {_escape_md_inline(item.detail)}"
+            for finding in items:
+                line = f"- **{escape_md_inline(finding.summary)}**"
+                if finding.detail:
+                    line += f" — {escape_md_inline(finding.detail)}"
                 lines.append(line)
-                for ev in item.evidence:
-                    lines.append(f"  - evidence: {_escape_md_inline(ev)}")
+                for note in finding.evidence:
+                    lines.append(f"  - evidence: {escape_md_inline(note)}")
             return "\n".join(lines) + "\n"
 
         evidence_lines: list[str] = []
         for item in self.findings:
             for ev in item.evidence:
-                evidence_lines.append(f"- {_escape_md_inline(ev)}")
+                evidence_lines.append(f"- {escape_md_inline(ev)}")
         for art in self.artifacts:
-            evidence_lines.append(f"- artifact: {_escape_md_inline(art)}")
+            evidence_lines.append(f"- artifact: {escape_md_inline(art)}")
         evidence_body = "\n".join(evidence_lines) + "\n" if evidence_lines else "_None._\n"
 
         return (
             f"# Hypothesis\n\n"
-            f"`{_escape_md_code(self.hypothesis_id)}`\n\n"
+            f"`{escape_md_code(self.hypothesis_id)}`\n\n"
             f"# Method\n\n"
-            f"Role: `{self.role}` · Agent: `{_escape_md_code(self.agent_id)}` · "
-            f"Worktree: `{_escape_md_code(self.worktree)}` · Status: `{self.status}`\n\n"
+            f"Role: `{self.role}` · Agent: `{escape_md_code(self.agent_id)}` · "
+            f"Worktree: `{escape_md_code(self.worktree)}` · Status: `{self.status}`\n\n"
             f"# Discoveries\n\n"
             f"{_bullets(discoveries)}\n"
             f"# Null results\n\n"
@@ -193,8 +193,8 @@ class FindingsReport:
             f"# Evidence\n\n"
             f"{evidence_body}\n"
             f"# Attribution\n\n"
-            f"— {_escape_md_inline(self.agent_id)} ({self.role}) · "
-            f"worktree `{_escape_md_code(self.worktree)}`\n"
+            f"— {escape_md_inline(self.agent_id)} ({self.role}) · "
+            f"worktree `{escape_md_code(self.worktree)}`\n"
         )
 
     @classmethod
@@ -295,8 +295,8 @@ def validate_findings_markdown(text: str) -> None:
     """Fail closed if Markdown is missing required section headings."""
     if not text or not text.strip():
         raise FindingsValidationError("findings Markdown is empty")
-    headings = _extract_headings_outside_code_blocks(text)
-    missing = [s for s in REQUIRED_MD_SECTIONS if _normalize_heading(s) not in headings]
+    headings = extract_headings_outside_code_blocks(text)
+    missing = [s for s in REQUIRED_MD_SECTIONS if normalize_heading(s) not in headings]
     if missing:
         raise FindingsValidationError(
             "findings Markdown missing required sections: " + ", ".join(missing)
@@ -368,7 +368,7 @@ def _require_nonempty_str(raw: dict[str, Any], key: str) -> str:
     return val.strip()
 
 
-def _extract_headings_outside_code_blocks(text: str) -> set[str]:
+def extract_headings_outside_code_blocks(text: str) -> set[str]:
     """Extract normalized ATX headings, ignoring those inside fenced code blocks."""
     # Find all fence positions
     fences = list(_FENCE_RE.finditer(text))
@@ -404,16 +404,16 @@ def _extract_headings_outside_code_blocks(text: str) -> set[str]:
             heading_text = match.group(2)
             # Strip optional trailing hashes (ATX closing sequence)
             heading_text = re.sub(r"\s*#+\s*$", "", heading_text)
-            headings.add(_normalize_heading(heading_text))
+            headings.add(normalize_heading(heading_text))
 
     return headings
 
 
-def _normalize_heading(text: str) -> str:
+def normalize_heading(text: str) -> str:
     return " ".join(text.strip().lower().split())
 
 
-def _escape_md_inline(text: str) -> str:
+def escape_md_inline(text: str) -> str:
     """Escape characters that break bold/list Markdown when embedding free text."""
     return (
         text.replace("\\", "\\\\")
@@ -425,6 +425,6 @@ def _escape_md_inline(text: str) -> str:
     )
 
 
-def _escape_md_code(text: str) -> str:
+def escape_md_code(text: str) -> str:
     """Escape backticks inside inline code spans."""
     return text.replace("`", "'")
