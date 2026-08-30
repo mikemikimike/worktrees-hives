@@ -379,9 +379,9 @@ def validate_aggregate_markdown(text: str) -> None:
     """Fail closed if aggregate Markdown misses sections or never-merge language."""
     if not text or not text.strip():
         raise AggregateValidationError("aggregate Markdown is empty")
-    headings = _findings._extract_headings_outside_code_blocks(text)
+    headings = _findings.extract_headings_outside_code_blocks(text)
     missing = [
-        s for s in REQUIRED_AGGREGATE_MD_SECTIONS if _findings._normalize_heading(s) not in headings
+        s for s in REQUIRED_AGGREGATE_MD_SECTIONS if _findings.normalize_heading(s) not in headings
     ]
     if missing:
         raise AggregateValidationError(
@@ -427,13 +427,13 @@ def _require_nonempty_str(raw: dict[str, Any], key: str) -> str:
 
 def _cell_inline(text: str) -> str:
     """Escape free text for a Markdown table cell / list item (incl. pipes)."""
-    normalized = text.replace("\n", " ").replace("\r", " ")
-    return _findings._escape_md_inline(normalized).replace("|", "\\|")
+    escaped = _findings.escape_md_inline(text).replace("|", "\\|")
+    return escaped.replace("\n", " ").replace("\r", " ")
 
 
 def _cell_code(text: str) -> str:
     """Escape text for an inline code span inside a table cell."""
-    escaped = _findings._escape_md_code(text).replace("|", "\\|")
+    escaped = _findings.escape_md_code(text).replace("|", "\\|")
     return escaped.replace("\n", " ").replace("\r", " ")
 
 

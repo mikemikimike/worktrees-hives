@@ -53,7 +53,11 @@ _SHELL_SEPARATORS = frozenset({"&&", "||", ";", "|", "&"})
 
 # Shell -c payload: git … push … with any force form (free-form command path).
 _SHELL_C_RE = re.compile(
-    r"(?ix)\b(?:sh|bash|zsh|dash|ksh|fish)\b(?:\s+-[^\s]+)*\s+-c\s+(['\"])(.*?)\1"
+    # Keep scanning shell argv tokens until the command option.  Some shells
+    # accept options with a separate value (for example ``bash -o posix``),
+    # so restricting this to dash-prefixed tokens misses the payload entirely.
+    r"(?ix)\b(?:sh|bash|zsh|dash|ksh|fish)\b"
+    r"(?:\s+(?!-c(?:\s|$))\S+)*\s+-c\s+(['\"])(.*?)\1"
 )
 _GIT_PUSH_FORCE_IN_PAYLOAD = re.compile(
     r"(?ix)\bgit(?:\.exe)?\b(?:\s+\S+)*\s+push\b.*?"
@@ -301,6 +305,20 @@ def run_lab_unit(
     ----------
     manager:
         Job manager (worktree allocate/teardown via ``wh``).
+    owner:
+        Repository owner passed through to ``manager.allocate``.
+    repo:
+        Repository name passed through to ``manager.allocate``.
+    hypothesis_id:
+        Hypothesis identifier for this run unit.
+    agent_id:
+        Identifier of the agent/subagent executing this unit.
+    role:
+        ``AgentRole`` (or its string value) the unit runs under.
+    branch:
+        Branch to allocate the worktree from, if not the default.
+    job_id:
+        Explicit job identifier, if the caller wants to control it.
     command:
         Optional argv string or list run with ``cwd=worktree_path`` (no shell).
         Merge / bare ``git push --force`` are rejected **before** allocate.
@@ -357,7 +375,7 @@ def run_lab_unit(
                 )
                 return _maybe_teardown(manager, result, teardown_on_error)
 
-        report: FindingsReport | None = None
+        report: FindingsReport | None
         findings_error: str | None = None
         try:
             report = load_findings_pair(jpath, mpath)

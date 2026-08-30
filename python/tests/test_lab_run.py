@@ -126,6 +126,20 @@ class TestNeverMerge:
         with pytest.raises(PolicyError, match=r"BARE_FORCE|force"):
             assert_command_allowed("sh -c 'git push origin main --force'")
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "bash -o posix -c 'git push origin main --force'",
+            "bash --rcfile /dev/null -c 'git push origin main --force'",
+        ],
+    )
+    def test_denies_shell_wrapper_force_after_option_values(self, command: str) -> None:
+        with pytest.raises(PolicyError, match=r"FORCE_PUSH|force"):
+            assert_command_allowed(command)
+
+    def test_allows_shell_wrapper_without_force_after_option_value(self) -> None:
+        assert_command_allowed("bash --rcfile /dev/null -c 'printf ready'")
+
     def test_denies_force_with_lease_in_free_command(self) -> None:
         # Free-form --command must not force-push; lease only via Rust git-safe.
         with pytest.raises(PolicyError, match=r"FORCE_PUSH|force"):
