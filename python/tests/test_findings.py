@@ -238,9 +238,7 @@ class TestFindingsMarkdown:
 
     def test_heading_separator_cannot_cross_lines(self) -> None:
         """An ATX heading marker and its text must be on the same line."""
-        md = " #\nDiscoveries\n" + empty_findings_markdown_template().replace(
-            "# Discoveries\n", ""
-        )
+        md = " #\nDiscoveries\n" + empty_findings_markdown_template().replace("# Discoveries\n", "")
         with pytest.raises(FindingsValidationError, match="missing required sections"):
             validate_findings_markdown(md)
 
@@ -266,9 +264,7 @@ class TestFindingsMarkdown:
 
     def test_trailing_hashes_need_whitespace_separator(self) -> None:
         """Unseparated trailing hashes remain part of an ATX heading's text."""
-        md = empty_findings_markdown_template().replace(
-            "# Discoveries\n", "# Discoveries###\n"
-        )
+        md = empty_findings_markdown_template().replace("# Discoveries\n", "# Discoveries###\n")
         with pytest.raises(FindingsValidationError, match="missing required sections"):
             validate_findings_markdown(md)
 

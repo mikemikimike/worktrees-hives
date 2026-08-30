@@ -392,11 +392,7 @@ def extract_headings_outside_code_blocks(text: str) -> set[str]:
         # Find matching closing fence
         j = i + 1
         while j < len(fences):
-            if (
-                fences[j].group("marker")[0] == fence_type
-                and len(fences[j].group("marker")) >= fence_length
-                and not fences[j].group("suffix").strip(" \t")
-            ):
+            if _is_matching_closing_fence(fences[j], fence_type, fence_length):
                 end_pos = fences[j].end()
                 code_block_ranges.append((start_pos, end_pos))
                 i = j + 1
@@ -419,6 +415,19 @@ def extract_headings_outside_code_blocks(text: str) -> set[str]:
             headings.add(normalize_heading(heading_text))
 
     return headings
+
+
+def _is_matching_closing_fence(
+    candidate: re.Match[str],
+    fence_type: str,
+    fence_length: int,
+) -> bool:
+    """Return whether a fence candidate closes the opening fence."""
+    if candidate.group("marker")[0] != fence_type:
+        return False
+    if len(candidate.group("marker")) < fence_length:
+        return False
+    return not candidate.group("suffix").strip(" \t")
 
 
 def _is_valid_fence(match: re.Match[str]) -> bool:
