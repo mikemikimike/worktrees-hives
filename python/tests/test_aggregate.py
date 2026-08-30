@@ -241,7 +241,7 @@ class TestAggregateMarkdown:
         assert "## Attribution" in md_agent
         assert "Fable 5 (agent)" in md_agent
 
-    def test_inline_newlines_are_flattened_after_shared_escaping(self) -> None:
+    def test_inline_newlines_are_flattened_after_shared_escaping_with_literal_escapes(self) -> None:
         unit = AggregateUnit(
             hypothesis_id="H-1",
             findings_json="findings.json",
@@ -249,9 +249,7 @@ class TestAggregateMarkdown:
             outcome=UnitOutcome.MISSING_REPORT,
             detail="first\r\nsecond",
         )
-        md = AggregateReport(
-            units=(unit,), attribution="agent\nname"
-        ).to_markdown()
+        md = AggregateReport(units=(unit,), attribution="agent\nname").to_markdown()
         assert "first  second" in md
         assert "agent name" in md
         assert r"first\r\nsecond" not in md
