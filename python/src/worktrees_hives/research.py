@@ -253,7 +253,7 @@ def parse_research_json(text: str) -> ResearchContract:
 
 
 def _validate_schema_version(value: object) -> None:
-    if type(value) is not int:
+    if not isinstance(value, int) or isinstance(value, bool):
         raise ResearchValidationError("schema_version must be an int")
     if value != RESEARCH_CONTRACT_SCHEMA_VERSION:
         raise ResearchValidationError(

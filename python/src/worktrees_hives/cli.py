@@ -801,7 +801,7 @@ def main(argv: list[str] | None = None) -> int:
         "--max-fixes",
         type=int,
         default=MAX_FIX_COMMITS_PER_CYCLE,
-        help=(f"Max code-fix commits per PR per cycle (default: {MAX_FIX_COMMITS_PER_CYCLE})"),
+        help=f"Max code-fix commits per PR per cycle (default: {MAX_FIX_COMMITS_PER_CYCLE})",
     )
     baby_p.add_argument(
         "--attribution",
